@@ -6,6 +6,9 @@ from pytensor.tensor import tensor
 from pytensor.tensor.slinalg import cholesky
 
 
+torch = pytest.importorskip("torch")
+
+
 @pytest.mark.parametrize(
     "cov_batch_shape", [(), (1000,), (4, 1000)], ids=lambda arg: f"cov:{arg}"
 )
@@ -19,4 +22,6 @@ def test_batched_mvnormal_logp_and_dlogp(cov_batch_shape):
     chol_cov = cholesky(cov, lower=True, on_error="raise")
 
     fn = pytensor.function([cov], [chol_cov])
-    assert np.all(np.isclose(fn(test_values), np.linalg.cholesky(test_values)))
+    assert np.all(
+        np.isclose(fn(test_values, mode="PYTORCH"), np.linalg.cholesky(test_values))
+    )
