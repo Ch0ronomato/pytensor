@@ -21,7 +21,5 @@ def test_batched_mvnormal_logp_and_dlogp(cov_batch_shape):
 
     chol_cov = cholesky(cov, lower=True, on_error="raise")
 
-    fn = pytensor.function([cov], [chol_cov])
-    assert np.all(
-        np.isclose(fn(test_values, mode="PYTORCH"), np.linalg.cholesky(test_values))
-    )
+    fn = pytensor.function([cov], [chol_cov], mode="PYTORCH")
+    assert np.all(np.isclose(fn(test_values), np.linalg.cholesky(test_values)))
