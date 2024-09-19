@@ -1,5 +1,7 @@
 from typing import Any
 
+from torch import is_tensor
+
 from pytensor.graph.basic import Variable
 from pytensor.link.basic import JITLinker
 
@@ -13,7 +15,10 @@ class PytorchLinker(JITLinker):
         return pytorch_typify(inp)
 
     def output_filter(self, var: Variable, out: Any) -> Any:
-        return out.cpu()
+        if is_tensor(out):
+            return out.cpu()
+        else:
+            return out
 
     def fgraph_convert(self, fgraph, input_storage, storage_map, **kwargs):
         from pytensor.link.pytorch.dispatch import pytorch_funcify
