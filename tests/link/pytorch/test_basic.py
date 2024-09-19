@@ -17,6 +17,7 @@ from pytensor.raise_op import CheckAndRaise
 from pytensor.scalar import float64, int64
 from pytensor.scalar.loop import ScalarLoop
 from pytensor.tensor import alloc, arange, as_tensor, empty, eye
+from pytensor.tensor.elemwise import Elemwise
 from pytensor.tensor.type import matrices, matrix, scalar, vector
 
 
@@ -351,3 +352,18 @@ def test_pytorch_OpFromGraph():
 
     f = FunctionGraph([x, y, z], [out])
     compare_pytorch_and_py(f, [xv, yv, zv])
+
+
+def test_ScalarLoop_Elemwise():
+    n_steps = int64("n_steps")
+    x0 = float64("x0")
+    x = x0 * 2
+    until = x >= 10
+
+    op = ScalarLoop(init=[x0], update=[x], until=until)
+    fn = function([n_steps, x0], Elemwise(op)(n_steps, x0), mode=pytorch_mode)
+
+    states, dones = fn(10, np.array(range(5)))
+
+    np.testing.assert_allclose(states, [0, 4, 8, 12, 16])
+    np.testing.assert_allclose(dones, [False, False, False, True, True])
