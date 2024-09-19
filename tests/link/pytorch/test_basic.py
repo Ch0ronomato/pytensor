@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 import pytensor.tensor.basic as ptb
+from pytensor.compile.builders import OpFromGraph
 from pytensor.compile.function import function
 from pytensor.compile.mode import get_mode
 from pytensor.compile.sharedvalue import SharedVariable, shared
@@ -16,7 +17,7 @@ from pytensor.raise_op import CheckAndRaise
 from pytensor.scalar import float64, int64
 from pytensor.scalar.loop import ScalarLoop
 from pytensor.tensor import alloc, arange, as_tensor, empty, eye
-from pytensor.tensor.type import matrix, scalar, vector
+from pytensor.tensor.type import matrices, matrix, scalar, vector
 
 
 torch = pytest.importorskip("torch")
@@ -68,10 +69,10 @@ def compare_pytorch_and_py(
     py_res = pytensor_py_fn(*test_inputs)
 
     if len(fgraph.outputs) > 1:
-        for j, p in zip(pytorch_res, py_res):
-            assert_fn(j.cpu(), p)
+        for pytorch_res_i, py_res_i in zip(pytorch_res, py_res):
+            assert_fn(pytorch_res_i.detach().cpu().numpy(), py_res_i)
     else:
-        assert_fn([pytorch_res[0].cpu()], py_res)
+        assert_fn(pytorch_res[0].detach().cpu().numpy(), py_res[0])
 
     return pytensor_torch_fn, pytorch_res
 
@@ -334,3 +335,19 @@ def test_ScalarLoop_while():
     ):
         np.testing.assert_allclose(res[0], np.array(expected[0]))
         np.testing.assert_allclose(res[1], np.array(expected[1]))
+
+
+def test_pytorch_OpFromGraph():
+    x, y, z = matrices("xyz")
+    ofg_1 = OpFromGraph([x, y], [x + y])
+    ofg_2 = OpFromGraph([x, y], [x * y, x - y])
+
+    o1, o2 = ofg_2(y, z)
+    out = ofg_1(x, o1) + o2
+
+    xv = np.ones((2, 2), dtype=config.floatX)
+    yv = np.ones((2, 2), dtype=config.floatX) * 3
+    zv = np.ones((2, 2), dtype=config.floatX) * 5
+
+    f = FunctionGraph([x, y, z], [out])
+    compare_pytorch_and_py(f, [xv, yv, zv])

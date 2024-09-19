@@ -209,9 +209,9 @@ class autocast_float_as:
     Examples
     --------
     >>> from pytensor.tensor import fvector
-    >>> with autocast_float_as('float32'):
-    ...    assert (fvector() + 1.1).dtype == 'float32'  # temporary downcasting
-    >>> assert (fvector() + 1.1).dtype == 'float64' # back to default behaviour
+    >>> with autocast_float_as("float32"):
+    ...     assert (fvector() + 1.1).dtype == "float32"  # temporary downcasting
+    >>> assert (fvector() + 1.1).dtype == "float64"  # back to default behaviour
 
     """
 
@@ -1140,14 +1140,25 @@ class ScalarOp(COp):
         else:
             raise NotImplementedError(f"Cannot calculate the output types for {self}")
 
+    @staticmethod
+    def _cast_scalar(x, dtype):
+        if hasattr(x, "astype"):
+            return x.astype(dtype)
+        elif dtype == "bool":
+            return np.bool_(x)
+        else:
+            return getattr(np, dtype)(x)
+
     def perform(self, node, inputs, output_storage):
         if self.nout == 1:
-            output_storage[0][0] = self.impl(*inputs)
+            dtype = node.outputs[0].dtype
+            output_storage[0][0] = self._cast_scalar(self.impl(*inputs), dtype)
         else:
             variables = from_return_values(self.impl(*inputs))
             assert len(variables) == len(output_storage)
-            for storage, variable in zip(output_storage, variables):
-                storage[0] = variable
+            for out, storage, variable in zip(node.outputs, output_storage, variables):
+                dtype = out.dtype
+                storage[0] = self._cast_scalar(variable, dtype)
 
     def impl(self, *inputs):
         raise MethodNotDefined("impl", type(self), self.__class__.__name__)
