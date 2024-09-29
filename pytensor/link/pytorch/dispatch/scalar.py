@@ -2,7 +2,7 @@ import torch
 import torch.compiler
 
 from pytensor.link.pytorch.dispatch.basic import pytorch_funcify
-from pytensor.scalar.basic import ScalarOp
+from pytensor.scalar.basic import Identity, ScalarOp
 from pytensor.scalar.loop import ScalarLoop
 
 
@@ -52,9 +52,9 @@ def pytorch_funicify_ScalarLoop(op, node, **kwargs):
                 start_and_constants[state_length:],
             )
             done = True
-            for _ in range(steps):
+            for _ in range(steps.int()):
                 *carry, done = update(*carry, *constants)
-                if torch.any(done):
+                if done:
                     break
             if len(node.outputs) == 2:
                 return carry[0], done
@@ -75,3 +75,11 @@ def pytorch_funicify_ScalarLoop(op, node, **kwargs):
                 return carry
 
     return torch.compiler.disable(scalar_loop, recursive=False)
+
+
+@pytorch_funcify.register(Identity)
+def pytorch_funcify_Identity(op, **kwargs):
+    def i(x):
+        return x
+
+    return i

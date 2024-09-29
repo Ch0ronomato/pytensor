@@ -1,3 +1,5 @@
+import itertools
+
 import torch
 
 from pytensor.link.pytorch.dispatch.basic import pytorch_funcify
@@ -11,9 +13,58 @@ def pytorch_funcify_Elemwise(op, node, **kwargs):
     scalar_op = op.scalar_op
     base_fn = pytorch_funcify(scalar_op, node=node, **kwargs)
 
-    def elemwise_fn(*inputs):
-        Elemwise._check_runtime_broadcast(node, inputs)
-        return base_fn(*inputs)
+    if hasattr(scalar_op, "nfunc_spec") and hasattr(torch, scalar_op.nfunc_spec[0]):
+        # torch can handle this scalar
+        # broadcast, we'll let it.
+        def elemwise_fn(*inputs):
+            Elemwise._check_runtime_broadcast(node, inputs)
+            return base_fn(*inputs)
+    else:
+
+        def elemwise_fn(*inputs):
+            Elemwise._check_runtime_broadcast(node, inputs)
+            num_inputs = len(inputs)
+
+            def spread(row):
+                res = base_fn(*[i[0] for i in torch.tensor_split(row, num_inputs)])
+                res = [
+                    r.view(-1) if torch.is_tensor(r) and not r.shape else r for r in res
+                ]
+                # we need to flatten the result
+                if len(res) > 1:
+                    return tuple(itertools.chain.from_iterable(res))
+                else:
+                    return res
+
+            # I think we need to handle two different things
+            # 1. batch dimensions
+            # 2. operator dimensions. This is tricky since
+            #    the underline operator will have >=1 argument
+            #    that is actually a tensor, but the rest constants
+            #    so we need to repeat them to the right shape
+            # batched_base_fn = torch.vmap(spread)
+            shapes = []
+            shaped_inputs = []
+            for i, si in zip(inputs, node.inputs):
+                # of shapes
+                if len(i.shape) != si.ndim:
+                    # the ranks of this input is different than
+                    # what's expected
+                    shapes.append(max(i.shape))
+                    shaped_inputs.append(i.view(-1, 1) if len(i.shape) == 1 else i)
+                else:
+                    shaped_inputs.append(i)
+
+            shapes_no_dups = list(dict.fromkeys(s for s in shapes))
+            # repeat all the `repeats` to the proper shape
+            args = torch.hstack(
+                [
+                    i.repeat(shapes_no_dups).view(-1, 1) if not len(i.shape) else i
+                    for i in shaped_inputs
+                ]
+            )
+            res = torch.stack([torch.tensor(spread(a)) for a in args.unbind(0)])
+            return torch.tensor_split(res, len(node.outputs), dim=1)
 
     return elemwise_fn
 
