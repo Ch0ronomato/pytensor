@@ -1,11 +1,14 @@
 import numpy as np
 import pytest
 
+import pytensor
 import pytensor.tensor as pt
 import pytensor.tensor.math as ptm
+from pytensor.compile.io import In
 from pytensor.configdefaults import config
 from pytensor.graph.fg import FunctionGraph
 from pytensor.tensor import elemwise as pt_elemwise
+from pytensor.tensor.elemwise import Elemwise
 from pytensor.tensor.special import SoftmaxGrad, log_softmax, softmax
 from pytensor.tensor.type import matrix, tensor, tensor3, vector
 from tests.link.pytorch.test_basic import compare_pytorch_and_py
@@ -143,3 +146,42 @@ def test_softmax_grad(axis):
     out = SoftmaxGrad(axis=axis)(dy, sm)
     fgraph = FunctionGraph([dy, sm], [out])
     compare_pytorch_and_py(fgraph, [dy_value, sm_value])
+
+
+def test_fibonacci_loop():
+    n_steps = pytensor.scalar.int32("n_steps")
+    f0 = pytensor.scalar.float32("f0")
+    f1 = pytensor.scalar.float32("f1")
+    end = pytensor.scalar.float32("end")
+    i = pytensor.scalar.float32("end")
+
+    op = pytensor.scalar.ScalarLoop(
+        init=[f0, f1, end, i],
+        update=[
+            pytensor.scalar.basic.identity(f1),
+            f0 + f1,
+            pytensor.scalar.basic.identity(end),
+            i + 1,
+        ],
+        until=i >= end,
+    )
+
+    e = Elemwise(op)
+    _, p, _, _, done = e(n_steps, f0, f1, end, i)
+
+    fn = pytensor.function(
+        [
+            n_steps,
+            end,
+            In(f0, value=np.int32(0)),
+            In(f1, value=np.int32(1)),
+            In(i, value=np.int32(2)),
+        ],
+        [p, done],
+        mode="PYTORCH",
+    )
+
+    res = ([[21.0], [5.0], [8.0]], [[0.0], [1.0], [1.0]])
+    np.testing.assert_allclose(
+        fn(np.array([[i] for i in [7, 5, 100]]), np.array([10.0, 5.0, 6.0])), res
+    )
