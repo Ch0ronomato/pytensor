@@ -11,9 +11,25 @@ def pytorch_funcify_Elemwise(op, node, **kwargs):
     scalar_op = op.scalar_op
     base_fn = pytorch_funcify(scalar_op, node=node, **kwargs)
 
-    def elemwise_fn(*inputs):
-        Elemwise._check_runtime_broadcast(node, inputs)
-        return base_fn(*inputs)
+    if hasattr(scalar_op, "nfunc_spec") and hasattr(torch, scalar_op.nfunc_spec[0]):
+        # torch can handle this scalar
+        # broadcast, we'll let it.
+        def elemwise_fn(*inputs):
+            Elemwise._check_runtime_broadcast(node, inputs)
+            return base_fn(*inputs)
+    else:
+
+        def elemwise_fn(*inputs):
+            Elemwise._check_runtime_broadcast(node, inputs)
+            shaped_inputs = torch.broadcast_tensors(*inputs)
+            if shaped_inputs[0].dim() == 1:
+                ufunc = torch.vmap(base_fn)
+            else:
+                dims = (tuple(range(shaped_inputs[0].dim())),)
+                ufunc = torch.vmap(base_fn, in_dims=dims)
+            # @todo: This will fail for anything that calls
+            # `.item()`
+            return ufunc(*shaped_inputs)
 
     return elemwise_fn
 
