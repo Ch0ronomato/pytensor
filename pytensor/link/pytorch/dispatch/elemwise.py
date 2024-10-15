@@ -22,11 +22,9 @@ def pytorch_funcify_Elemwise(op, node, **kwargs):
         def elemwise_fn(*inputs):
             Elemwise._check_runtime_broadcast(node, inputs)
             shaped_inputs = torch.broadcast_tensors(*inputs)
-            if shaped_inputs[0].dim() == 1:
-                ufunc = torch.vmap(base_fn)
-            else:
-                dims = (tuple(range(shaped_inputs[0].dim())),)
-                ufunc = torch.vmap(base_fn, in_dims=dims)
+            ufunc = base_fn
+            for _ in range(shaped_inputs[0].dim()):
+                ufunc = torch.vmap(ufunc)
             # @todo: This will fail for anything that calls
             # `.item()`
             return ufunc(*shaped_inputs)
