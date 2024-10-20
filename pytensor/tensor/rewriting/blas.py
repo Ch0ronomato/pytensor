@@ -96,7 +96,15 @@ from pytensor.tensor.blas import (
 )
 from pytensor.tensor.elemwise import DimShuffle, Elemwise
 from pytensor.tensor.exceptions import NotScalarConstantError
-from pytensor.tensor.math import Dot, _matrix_matrix_matmul, add, mul, neg, sub
+from pytensor.tensor.math import (
+    Dot,
+    _matrix_matrix_matmul,
+    add,
+    mul,
+    neg,
+    sub,
+    variadic_add,
+)
 from pytensor.tensor.rewriting.elemwise import local_dimshuffle_lift
 from pytensor.tensor.type import (
     DenseTensorType,
@@ -386,10 +394,7 @@ def _gemm_from_factored_list(fgraph, lst):
                     item_to_var(input) for k, input in enumerate(lst) if k not in (i, j)
                 ]
                 add_inputs.extend(gemm_of_sM_list)
-                if len(add_inputs) > 1:
-                    rval = [add(*add_inputs)]
-                else:
-                    rval = add_inputs
+                rval = [variadic_add(*add_inputs)]
                 # print "RETURNING GEMM THING", rval
                 return rval, old_dot22
 
@@ -757,8 +762,6 @@ blas_optdb.register(
 )
 
 
-# After destroyhandler(49.5) but before we try to make elemwise things
-# inplace (75)
 blas_opt_inplace = in2out(
     local_inplace_gemm, local_inplace_gemv, local_inplace_ger, name="blas_opt_inplace"
 )
@@ -768,7 +771,8 @@ optdb.register(
     "fast_run",
     "inplace",
     "blas_opt_inplace",
-    position=70.0,
+    # Before we try to make elemwise things inplace (70.5)
+    position=50.2,
 )
 
 

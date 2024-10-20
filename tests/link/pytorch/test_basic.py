@@ -7,12 +7,15 @@ import pytest
 import pytensor.tensor.basic as ptb
 from pytensor.compile.builders import OpFromGraph
 from pytensor.compile.function import function
-from pytensor.compile.mode import get_mode
+from pytensor.compile.mode import PYTORCH, Mode
 from pytensor.compile.sharedvalue import SharedVariable, shared
 from pytensor.configdefaults import config
+from pytensor.graph import RewriteDatabaseQuery
 from pytensor.graph.basic import Apply
 from pytensor.graph.fg import FunctionGraph
 from pytensor.graph.op import Op
+from pytensor.ifelse import ifelse
+from pytensor.link.pytorch.linker import PytorchLinker
 from pytensor.raise_op import CheckAndRaise
 from pytensor.scalar import float64, int64
 from pytensor.scalar.loop import ScalarLoop
@@ -24,8 +27,13 @@ from pytensor.tensor.type import matrices, matrix, scalar, vector
 torch = pytest.importorskip("torch")
 
 
-pytorch_mode = get_mode("PYTORCH")
-py_mode = get_mode("FAST_COMPILE")
+optimizer = RewriteDatabaseQuery(
+    # While we don't have a PyTorch implementation of Blockwise
+    include=["local_useless_unbatched_blockwise"],
+    exclude=PYTORCH._optimizer.exclude,
+)
+pytorch_mode = Mode(linker=PytorchLinker(), optimizer=optimizer)
+py_mode = Mode(linker="py", optimizer=None)
 
 
 def compare_pytorch_and_py(
@@ -222,7 +230,7 @@ def test_alloc_and_empty():
     assert res.dtype == torch.float32
 
     v = vector("v", shape=(3,), dtype="float64")
-    out = alloc(v, (dim0, dim1, 3))
+    out = alloc(v, dim0, dim1, 3)
     compare_pytorch_and_py(
         FunctionGraph([v, dim1], [out]),
         [np.array([1, 2, 3]), np.array(7)],
@@ -336,6 +344,23 @@ def test_ScalarLoop_while():
     ):
         np.testing.assert_allclose(res[0], np.array(expected[0]))
         np.testing.assert_allclose(res[1], np.array(expected[1]))
+
+
+def test_pytorch_ifelse():
+    p1_vals = np.r_[1, 2, 3]
+    p2_vals = np.r_[-1, -2, -3]
+
+    a = scalar("a")
+    x = ifelse(a < 0.5, tuple(np.r_[p1_vals, p2_vals]), tuple(np.r_[p2_vals, p1_vals]))
+    x_fg = FunctionGraph([a], x)
+
+    compare_pytorch_and_py(x_fg, np.array([0.2], dtype=config.floatX))
+
+    a = scalar("a")
+    x = ifelse(a < 0.4, tuple(np.r_[p1_vals, p2_vals]), tuple(np.r_[p2_vals, p1_vals]))
+    x_fg = FunctionGraph([a], x)
+
+    compare_pytorch_and_py(x_fg, np.array([0.5], dtype=config.floatX))
 
 
 def test_pytorch_OpFromGraph():

@@ -1,3 +1,4 @@
+import numpy as np
 import scipy
 
 import pytensor
@@ -10,7 +11,6 @@ from pytensor.graph.rewriting.basic import (
     node_rewriter,
 )
 from pytensor.link.c.op import COp, _NoPythonCOp
-from pytensor.misc.safe_asarray import _asarray
 from pytensor.sparse import basic as sparse
 from pytensor.sparse.basic import (
     CSC,
@@ -210,7 +210,7 @@ pytensor.compile.optdb.register(
     ),
     "fast_run",
     "inplace",
-    position=60,
+    position=50.1,
 )
 
 
@@ -239,9 +239,9 @@ def local_addsd_ccode(fgraph, node):
 pytensor.compile.optdb.register(
     "local_addsd_ccode",
     WalkingGraphRewriter(local_addsd_ccode),
-    # Must be after local_inplace_addsd_ccode at 60
+    # Must be after local_inplace_addsd_ccode at 70.0
     "fast_run",
-    position=61,
+    position=70.1,
 )
 
 
@@ -283,7 +283,7 @@ class StructuredDotCSC(COp):
             (a_val, a_ind, a_ptr), (a_nrows, b.shape[0]), copy=False
         )
         # out[0] = a.dot(b)
-        out[0] = _asarray(a * b, dtype=node.outputs[0].type.dtype)
+        out[0] = np.asarray(a * b, dtype=node.outputs[0].type.dtype)
         assert _is_dense(out[0])  # scipy 0.7 automatically converts to dense
 
     def c_code(self, node, name, inputs, outputs, sub):

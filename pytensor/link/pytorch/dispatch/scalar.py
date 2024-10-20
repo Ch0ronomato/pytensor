@@ -2,7 +2,10 @@ import torch
 import torch.compiler
 
 from pytensor.link.pytorch.dispatch.basic import pytorch_funcify
-from pytensor.scalar.basic import ScalarOp
+from pytensor.scalar.basic import (
+    Cast,
+    ScalarOp,
+)
 from pytensor.scalar.loop import ScalarLoop
 
 
@@ -39,7 +42,7 @@ def pytorch_funcify_ScalarOp(op, node, **kwargs):
 
     return pytorch_func
 
-
+  
 @pytorch_funcify.register(ScalarLoop)
 def pytorch_funicify_ScalarLoop(op, node, **kwargs):
     update = pytorch_funcify(op.fgraph)
@@ -75,3 +78,13 @@ def pytorch_funicify_ScalarLoop(op, node, **kwargs):
                 return carry
 
     return torch.compiler.disable(scalar_loop, recursive=False)
+
+
+@pytorch_funcify.register(Cast)
+def pytorch_funcify_Cast(op: Cast, node, **kwargs):
+    dtype = getattr(torch, op.o_type.dtype)
+
+    def cast(x):
+        return x.to(dtype=dtype)
+
+    return cast

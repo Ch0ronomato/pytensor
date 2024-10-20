@@ -32,7 +32,6 @@ from pytensor.graph.rewriting.db import EquilibriumDB
 from pytensor.graph.type import HasShape, Type
 from pytensor.link.c.op import COp
 from pytensor.link.c.params_type import ParamsType
-from pytensor.misc.safe_asarray import _asarray
 from pytensor.printing import Printer, min_informative_str, pprint, set_precedence
 from pytensor.raise_op import CheckAndRaise, assert_op
 from pytensor.scalar import int32
@@ -512,7 +511,7 @@ def get_underlying_scalar_constant_value(
                     ret = v.owner.inputs[0].owner.inputs[idx]
                     ret = get_underlying_scalar_constant_value(ret, max_recur=max_recur)
                     # MakeVector can cast implicitly its input in some case.
-                    return _asarray(ret, dtype=v.type.dtype)
+                    return np.asarray(ret, dtype=v.type.dtype)
 
                 # This is needed when we take the grad as the Shape op
                 # are not already changed into MakeVector
@@ -589,7 +588,7 @@ class TensorFromScalar(COp):
         # Currently, pytensor.grad insists that the dtype of the returned
         # gradient has a float dtype, so we use floatX.
         if s.type.dtype in discrete_dtypes:
-            return [s.zeros_like().astype(config.floatX)]
+            return [s.zeros_like(dtype=config.floatX)]
 
         raise NotImplementedError("grad not implemented for complex dtypes")
 
@@ -1834,7 +1833,7 @@ class MakeVector(COp):
         (out,) = out_
         # not calling pytensor._asarray as optimization
         if (out[0] is None) or (out[0].size != len(inputs)):
-            out[0] = _asarray(inputs, dtype=node.outputs[0].dtype)
+            out[0] = np.asarray(inputs, dtype=node.outputs[0].dtype)
         else:
             # assume that out has correct dtype. there is no cheap way to check
             out[0][...] = inputs
@@ -1876,7 +1875,7 @@ class MakeVector(COp):
     def grad(self, inputs, output_gradients):
         # If the output is of an integer dtype, no gradient shall pass
         if self.dtype in discrete_dtypes:
-            return [ipt.zeros_like().astype(config.floatX) for ipt in inputs]
+            return [ipt.zeros_like(dtype=config.floatX) for ipt in inputs]
 
         grads = [output_gradients[0][i] for i in range(len(inputs))]
         return grads
@@ -2042,7 +2041,7 @@ def transpose(x, axes=None):
         # No-op
         return _x
 
-    ret = DimShuffle(tuple(s == 1 for s in _x.type.shape), axes)(_x)
+    ret = _x.dimshuffle(axes)
 
     if _x.name and axes == tuple(range((_x.type.ndim - 1), -1, -1)):
         ret.name = _x.name + ".T"
@@ -2537,7 +2536,7 @@ class Join(COp):
                     f"Join axis {int(axis)} out of bounds [0, {int(ndim)})"
                 )
 
-            out[0] = _asarray(
+            out[0] = np.asarray(
                 np.concatenate(tens, axis=axis), dtype=node.outputs[0].type.dtype
             )
 
@@ -3518,7 +3517,7 @@ class PermuteRowElements(Op):
                 newdims.append(i)
                 i += 1
 
-        gx = DimShuffle(tuple(s == 1 for s in gx.type.shape), newdims)(gx)
+        gx = gx.dimshuffle(newdims)
         assert gx.type.ndim == x.type.ndim
         assert all(
             s1 == s2
