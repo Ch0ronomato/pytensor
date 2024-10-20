@@ -42,7 +42,7 @@ def pytorch_funcify_ScalarOp(op, node, **kwargs):
 
     return pytorch_func
 
-  
+
 @pytorch_funcify.register(ScalarLoop)
 def pytorch_funicify_ScalarLoop(op, node, **kwargs):
     update = pytorch_funcify(op.fgraph)
