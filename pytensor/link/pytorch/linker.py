@@ -13,7 +13,11 @@ class PytorchLinker(JITLinker):
         return pytorch_typify(inp)
 
     def output_filter(self, var: Variable, out: Any) -> Any:
-        return out.cpu()
+        import torch
+
+        if torch.is_tensor(out):
+            return out.cpu()
+        return out
 
     def fgraph_convert(self, fgraph, input_storage, storage_map, **kwargs):
         from pytensor.link.pytorch.dispatch import pytorch_funcify
