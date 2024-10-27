@@ -11,7 +11,7 @@ def funcify_Blockwise(op: Blockwise, node, *args, **kwargs):
     batched_dims = op.batch_ndim(node)
     core_node = op._create_dummy_core_node(node.inputs)
     core_fgraph = FunctionGraph(inputs=core_node.inputs, outputs=core_node.outputs)
-    inner_func = pytorch_funcify(core_fgraph)
+    inner_func = pytorch_funcify(core_fgraph, squeeze_output=len(node.outputs) == 1)
 
     for _ in range(batched_dims):
         inner_func = torch.vmap(inner_func)
@@ -27,9 +27,6 @@ def funcify_Blockwise(op: Blockwise, node, *args, **kwargs):
             for i in inputs
         ]
         res = inner_func(*broadcast_inputs)
-        if len(node.outputs) == 1:
-            return res[0]
-        else:
-            return res
+        return res
 
     return batcher
