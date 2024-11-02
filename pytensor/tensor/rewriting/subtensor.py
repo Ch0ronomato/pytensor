@@ -48,6 +48,7 @@ from pytensor.tensor.math import (
     maximum,
     minimum,
     or_,
+    variadic_add,
 )
 from pytensor.tensor.math import all as pt_all
 from pytensor.tensor.rewriting.basic import (
@@ -337,49 +338,83 @@ def local_subtensor_of_dot(fgraph, node):
 @register_useless
 @register_canonicalize
 @register_specialize
+@register_stabilize
 @node_rewriter([Subtensor])
 def local_useless_slice(fgraph, node):
     """
-    Remove Subtensor of the form:
+    Remove useless slice(None) of the form:
         1. X[0, :] -> X[0]
         2. X[:] -> X
 
+    Also, canonicalize slices of the form:
+        X[0:7:1] -> X[None:None:None]
+        where X is a vector of length 7
+
+    And:
+        X[-1:-8:-1] -> X[::-1]
+        where x is a vector of length 7
+
     """
     idxs = get_idx_list(node.inputs, node.op.idx_list)
+    x = node.inputs[0]
 
     if not idxs:
         return [node.inputs[0]]
 
-    last_useless_slice = len(idxs)
-    for s in idxs[::-1]:
-        # check if slice and then check slice indices
+    new_idxs = list(idxs)
+    change_flag = False
+    last_useful_idx = -1
+    for dim, s in enumerate(new_idxs):
+        if not isinstance(s, slice):
+            last_useful_idx = dim
+            continue
+
+        if s == slice(None):
+            continue
+
+        step = s.step
+
+        if step is None:
+            positive_step = True
+        elif isinstance(step, Constant):
+            step_value = step.data
+            positive_step = step.data > 0
+            if step_value == 1:
+                change_flag = True
+                step = None
+        else:
+            # We can only canonicalize start and stop if we know the sign of step
+            last_useful_idx = dim
+            continue
+
+        start = s.start
+        stop = s.stop
+
+        if start is not None and extract_constant(
+            start, only_process_constants=True
+        ) == (0 if positive_step else -1):
+            change_flag = True
+            start = None
+
         if (
-            isinstance(s, slice)
-            and s.start is None
-            and s.stop is None
-            and (
-                s.step is None
-                or extract_constant(s.step, only_process_constants=True) == 1
-            )
+            stop is not None
+            and x.type.shape[dim] is not None
+            and extract_constant(stop, only_process_constants=True)
+            == (x.type.shape[dim] if positive_step else -x.type.shape[dim] - 1)
         ):
-            last_useless_slice -= 1
-        else:
-            break
-    # check if we removed something
-    if last_useless_slice < len(idxs):
-        new_idxs = idxs[:last_useless_slice]
-        if new_idxs:
-            new_subtensor = Subtensor(new_idxs)
-            new_subtensor_inputs = get_slice_elements(
-                new_idxs, lambda x: isinstance(x, Variable)
-            )
-            out = new_subtensor(node.inputs[0], *new_subtensor_inputs)
-            # Copy over previous output stacktrace
-            copy_stack_trace(node.outputs, out)
-            return [out]
-        else:
-            # Subtensor is not needed at all
-            return [node.inputs[0]]
+            change_flag = True
+            stop = None
+
+        if start is not None or stop is not None or step is not None:
+            last_useful_idx = dim
+
+        new_idxs[dim] = slice(start, stop, step)
+
+    if change_flag or ((last_useful_idx + 1) < len(idxs)):
+        out = x[tuple(new_idxs[: last_useful_idx + 1])]
+        # Copy over previous output stacktrace
+        copy_stack_trace(node.outputs, out)
+        return [out]
 
 
 # fast_compile to allow opt subtensor(cast{float32}(make_vector))
@@ -1218,15 +1253,11 @@ def local_IncSubtensor_serialize(fgraph, node):
             new_inputs = [i for i in node.inputs if not movable(i)] + [
                 mi.owner.inputs[0] for mi in movable_inputs
             ]
-            if len(new_inputs) == 0:
-                new_add = new_inputs[0]
-            else:
-                new_add = add(*new_inputs)
-
-                # Copy over stacktrace from original output, as an error
-                # (e.g. an index error) in this add operation should
-                # correspond to an error in the original add operation.
-                copy_stack_trace(node.outputs[0], new_add)
+            new_add = variadic_add(*new_inputs)
+            # Copy over stacktrace from original output, as an error
+            # (e.g. an index error) in this add operation should
+            # correspond to an error in the original add operation.
+            copy_stack_trace(node.outputs[0], new_add)
 
             # stack up the new incsubtensors
             tip = new_add
@@ -1287,7 +1318,7 @@ compile.optdb.register(
     ),
     "fast_run",
     "inplace",
-    position=60,
+    position=50.1,
 )
 
 
@@ -1309,7 +1340,7 @@ compile.optdb.register(
     ),
     "fast_run",
     "inplace",
-    position=60,
+    position=70.6,
 )
 
 
@@ -1335,7 +1366,7 @@ compile.optdb.register(
     ),
     "fast_run",
     "inplace",
-    position=60,
+    position=70.6,
 )
 
 

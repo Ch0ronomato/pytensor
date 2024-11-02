@@ -2,7 +2,7 @@ import logging
 import typing
 import warnings
 from functools import reduce
-from typing import TYPE_CHECKING, Literal, cast
+from typing import Literal, cast
 
 import numpy as np
 import scipy.linalg
@@ -11,7 +11,7 @@ import pytensor
 import pytensor.tensor as pt
 from pytensor.graph.basic import Apply
 from pytensor.graph.op import Op
-from pytensor.tensor import as_tensor_variable
+from pytensor.tensor import TensorLike, as_tensor_variable
 from pytensor.tensor import basic as ptb
 from pytensor.tensor import math as ptm
 from pytensor.tensor.blockwise import Blockwise
@@ -21,64 +21,72 @@ from pytensor.tensor.type import matrix, tensor, vector
 from pytensor.tensor.variable import TensorVariable
 
 
-if TYPE_CHECKING:
-    from pytensor.tensor import TensorLike
-
 logger = logging.getLogger(__name__)
 
 
 class Cholesky(Op):
-    """
-    Return a triangular matrix square root of positive semi-definite `x`.
-
-    L = cholesky(X, lower=True) implies dot(L, L.T) == X.
-
-    Parameters
-    ----------
-    lower : bool, default=True
-        Whether to return the lower or upper cholesky factor
-    on_error : ['raise', 'nan']
-        If on_error is set to 'raise', this Op will raise a
-        `scipy.linalg.LinAlgError` if the matrix is not positive definite.
-        If on_error is set to 'nan', it will return a matrix containing
-        nans instead.
-    """
-
-    # TODO: inplace
-    # TODO: for specific dtypes
     # TODO: LAPACK wrapper with in-place behavior, for solve also
 
-    __props__ = ("lower", "destructive", "on_error")
+    __props__ = ("lower", "check_finite", "on_error", "overwrite_a")
     gufunc_signature = "(m,m)->(m,m)"
 
-    def __init__(self, *, lower=True, check_finite=True, on_error="raise"):
+    def __init__(
+        self,
+        *,
+        lower: bool = True,
+        check_finite: bool = True,
+        on_error: Literal["raise", "nan"] = "raise",
+        overwrite_a: bool = False,
+    ):
         self.lower = lower
-        self.destructive = False
         self.check_finite = check_finite
         if on_error not in ("raise", "nan"):
             raise ValueError('on_error must be one of "raise" or ""nan"')
         self.on_error = on_error
+        self.overwrite_a = overwrite_a
+
+        if self.overwrite_a:
+            self.destroy_map = {0: [0]}
 
     def infer_shape(self, fgraph, node, shapes):
         return [shapes[0]]
 
     def make_node(self, x):
         x = as_tensor_variable(x)
-        assert x.ndim == 2
-        return Apply(self, [x], [x.type()])
+        if x.type.ndim != 2:
+            raise TypeError(
+                f"Cholesky only allowed on matrix (2-D) inputs, got {x.type.ndim}-D input"
+            )
+        # Call scipy to find output dtype
+        dtype = scipy.linalg.cholesky(np.eye(1, dtype=x.type.dtype)).dtype
+        return Apply(self, [x], [tensor(shape=x.type.shape, dtype=dtype)])
 
     def perform(self, node, inputs, outputs):
-        x = inputs[0]
-        z = outputs[0]
+        [x] = inputs
+        [out] = outputs
         try:
-            z[0] = scipy.linalg.cholesky(
-                x, lower=self.lower, check_finite=self.check_finite
-            ).astype(x.dtype)
+            # Scipy cholesky only makes use of overwrite_a when it is F_CONTIGUOUS
+            # If we have a `C_CONTIGUOUS` array we transpose to benefit from it
+            if self.overwrite_a and x.flags["C_CONTIGUOUS"]:
+                out[0] = scipy.linalg.cholesky(
+                    x.T,
+                    lower=not self.lower,
+                    check_finite=self.check_finite,
+                    overwrite_a=True,
+                ).T
+            else:
+                out[0] = scipy.linalg.cholesky(
+                    x,
+                    lower=self.lower,
+                    check_finite=self.check_finite,
+                    overwrite_a=self.overwrite_a,
+                )
+
         except scipy.linalg.LinAlgError:
             if self.on_error == "raise":
                 raise
             else:
-                z[0] = (np.zeros(x.shape) * np.nan).astype(x.dtype)
+                out[0] = np.full(x.shape, np.nan, dtype=node.outputs[0].type.dtype)
 
     def L_op(self, inputs, outputs, gradients):
         """
@@ -131,11 +139,66 @@ class Cholesky(Op):
         else:
             return [grad]
 
+    def inplace_on_inputs(self, allowed_inplace_inputs: list[int]) -> "Op":
+        if not allowed_inplace_inputs:
+            return self
+        new_props = self._props_dict()  # type: ignore
+        new_props["overwrite_a"] = True
+        return type(self)(**new_props)
 
-def cholesky(x, lower=True, on_error="raise", check_finite=False):
-    return Blockwise(
-        Cholesky(lower=lower, on_error=on_error, check_finite=check_finite)
-    )(x)
+
+def cholesky(
+    x: "TensorLike",
+    lower: bool = True,
+    *,
+    check_finite: bool = False,
+    overwrite_a: bool = False,
+    on_error: Literal["raise", "nan"] = "raise",
+):
+    """
+    Return a triangular matrix square root of positive semi-definite `x`.
+
+    L = cholesky(X, lower=True) implies dot(L, L.T) == X.
+
+    Parameters
+    ----------
+    x: tensor_like
+    lower : bool, default=True
+        Whether to return the lower or upper cholesky factor
+    check_finite : bool, default=False
+        Whether to check that the input matrix contains only finite numbers.
+    overwrite_a: bool, ignored
+        Whether to use the same memory for the output as `a`. This argument is ignored, and is present here only
+        for consistency with scipy.linalg.cholesky.
+    on_error : ['raise', 'nan']
+        If on_error is set to 'raise', this Op will raise a `scipy.linalg.LinAlgError` if the matrix is not positive definite.
+        If on_error is set to 'nan', it will return a matrix containing nans instead.
+
+    Returns
+    -------
+    TensorVariable
+        Lower or upper triangular Cholesky factor of `x`
+
+    Example
+    -------
+    .. testcode::
+
+        import pytensor
+        import pytensor.tensor as pt
+        import numpy as np
+
+        x = pt.tensor('x', shape=(5, 5), dtype='float64')
+        L = pt.linalg.cholesky(x)
+
+        f = pytensor.function([x], L)
+        x_value = np.random.normal(size=(5, 5))
+        x_value = x_value @ x_value.T # Ensures x is positive definite
+        L_value = f(x_value)
+        assert np.allclose(L_value @ L_value.T, x_value)
+
+    """
+
+    return Blockwise(Cholesky(lower=lower, on_error=on_error))(x)
 
 
 class SolveBase(Op):
@@ -145,6 +208,8 @@ class SolveBase(Op):
         "lower",
         "check_finite",
         "b_ndim",
+        "overwrite_a",
+        "overwrite_b",
     )
 
     def __init__(
@@ -153,6 +218,8 @@ class SolveBase(Op):
         lower=False,
         check_finite=True,
         b_ndim,
+        overwrite_a=False,
+        overwrite_b=False,
     ):
         self.lower = lower
         self.check_finite = check_finite
@@ -162,9 +229,25 @@ class SolveBase(Op):
             self.gufunc_signature = "(m,m),(m)->(m)"
         else:
             self.gufunc_signature = "(m,m),(m,n)->(m,n)"
+        self.overwrite_a = overwrite_a
+        self.overwrite_b = overwrite_b
+        destroy_map = {}
+        if self.overwrite_a and self.overwrite_b:
+            # An output destroying two inputs is not yet supported
+            # destroy_map[0] = [0, 1]
+            raise NotImplementedError(
+                "It's not yet possible to overwrite_a and overwrite_b simultaneously"
+            )
+        elif self.overwrite_a:
+            destroy_map[0] = [0]
+        elif self.overwrite_b:
+            destroy_map[0] = [1]
+        self.destroy_map = destroy_map
 
     def perform(self, node, inputs, outputs):
-        pass
+        raise NotImplementedError(
+            "SolveBase should be subclassed with an perform method"
+        )
 
     def make_node(self, A, b):
         A = as_tensor_variable(A)
@@ -235,7 +318,16 @@ def _default_b_ndim(b, b_ndim):
 
 
 class CholeskySolve(SolveBase):
+    __props__ = (
+        "lower",
+        "check_finite",
+        "b_ndim",
+        "overwrite_b",
+    )
+
     def __init__(self, **kwargs):
+        if kwargs.get("overwrite_a", False):
+            raise ValueError("overwrite_a is not supported for CholeskySolve")
         kwargs.setdefault("lower", True)
         super().__init__(**kwargs)
 
@@ -245,12 +337,22 @@ class CholeskySolve(SolveBase):
             (C, self.lower),
             b,
             check_finite=self.check_finite,
+            overwrite_b=self.overwrite_b,
         )
 
         output_storage[0][0] = rval
 
     def L_op(self, *args, **kwargs):
+        # TODO: Base impl should work, let's try it
         raise NotImplementedError()
+
+    def inplace_on_inputs(self, allowed_inplace_inputs: list[int]) -> "Op":
+        if 1 in allowed_inplace_inputs:
+            new_props = self._props_dict()  # type: ignore
+            new_props["overwrite_b"] = True
+            return type(self)(**new_props)
+        else:
+            return self
 
 
 def cho_solve(c_and_lower, b, *, check_finite=True, b_ndim: int | None = None):
@@ -286,9 +388,12 @@ class SolveTriangular(SolveBase):
         "lower",
         "check_finite",
         "b_ndim",
+        "overwrite_b",
     )
 
     def __init__(self, *, trans=0, unit_diagonal=False, **kwargs):
+        if kwargs.get("overwrite_a", False):
+            raise ValueError("overwrite_a is not supported for SolverTriangulare")
         super().__init__(**kwargs)
         self.trans = trans
         self.unit_diagonal = unit_diagonal
@@ -302,6 +407,7 @@ class SolveTriangular(SolveBase):
             trans=self.trans,
             unit_diagonal=self.unit_diagonal,
             check_finite=self.check_finite,
+            overwrite_b=self.overwrite_b,
         )
 
     def L_op(self, inputs, outputs, output_gradients):
@@ -313,6 +419,14 @@ class SolveTriangular(SolveBase):
             res[0] = ptb.triu(res[0])
 
         return res
+
+    def inplace_on_inputs(self, allowed_inplace_inputs: list[int]) -> "Op":
+        if 1 in allowed_inplace_inputs:
+            new_props = self._props_dict()  # type: ignore
+            new_props["overwrite_b"] = True
+            return type(self)(**new_props)
+        else:
+            return self
 
 
 def solve_triangular(
@@ -374,6 +488,8 @@ class Solve(SolveBase):
         "lower",
         "check_finite",
         "b_ndim",
+        "overwrite_a",
+        "overwrite_b",
     )
 
     def __init__(self, *, assume_a="gen", **kwargs):
@@ -391,7 +507,23 @@ class Solve(SolveBase):
             lower=self.lower,
             check_finite=self.check_finite,
             assume_a=self.assume_a,
+            overwrite_a=self.overwrite_a,
+            overwrite_b=self.overwrite_b,
         )
+
+    def inplace_on_inputs(self, allowed_inplace_inputs: list[int]) -> "Op":
+        if not allowed_inplace_inputs:
+            return self
+        new_props = self._props_dict()  # type: ignore
+        # PyTensor doesn't allow an output to destroy two inputs yet
+        # new_props["overwrite_a"] = 0 in allowed_inplace_inputs
+        # new_props["overwrite_b"] = 1 in allowed_inplace_inputs
+        if 1 in allowed_inplace_inputs:
+            # Give preference to overwrite_b
+            new_props["overwrite_b"] = True
+        else:  # allowed inputs == [0]
+            new_props["overwrite_a"] = True
+        return type(self)(**new_props)
 
 
 def solve(
@@ -642,7 +774,16 @@ expm = Expm()
 
 
 class SolveContinuousLyapunov(Op):
+    """
+    Solves a continuous Lyapunov equation, :math:`AX + XA^H = B`, for :math:`X.
+
+    Continuous time Lyapunov equations are special cases of Sylvester equations, :math:`AX + XB = C`, and can be solved
+    efficiently using the Bartels-Stewart algorithm. For more details, see the docstring for
+    scipy.linalg.solve_continuous_lyapunov
+    """
+
     __props__ = ()
+    gufunc_signature = "(m,m),(m,m)->(m,m)"
 
     def make_node(self, A, B):
         A = as_tensor_variable(A)
@@ -657,7 +798,8 @@ class SolveContinuousLyapunov(Op):
         (A, B) = inputs
         X = output_storage[0]
 
-        X[0] = scipy.linalg.solve_continuous_lyapunov(A, B)
+        out_dtype = node.outputs[0].type.dtype
+        X[0] = scipy.linalg.solve_continuous_lyapunov(A, B).astype(out_dtype)
 
     def infer_shape(self, fgraph, node, shapes):
         return [shapes[0]]
@@ -678,7 +820,41 @@ class SolveContinuousLyapunov(Op):
         return [A_bar, Q_bar]
 
 
+_solve_continuous_lyapunov = Blockwise(SolveContinuousLyapunov())
+
+
+def solve_continuous_lyapunov(A: TensorLike, Q: TensorLike) -> TensorVariable:
+    """
+    Solve the continuous Lyapunov equation :math:`A X + X A^H + Q = 0`.
+
+    Parameters
+    ----------
+    A: TensorLike
+        Square matrix of shape ``N x N``.
+    Q: TensorLike
+        Square matrix of shape ``N x N``.
+
+    Returns
+    -------
+    X: TensorVariable
+        Square matrix of shape ``N x N``
+
+    """
+
+    return cast(TensorVariable, _solve_continuous_lyapunov(A, Q))
+
+
 class BilinearSolveDiscreteLyapunov(Op):
+    """
+    Solves a discrete lyapunov equation, :math:`AXA^H - X = Q`, for :math:`X.
+
+    The solution is computed by first transforming the discrete-time problem into a continuous-time form. The continuous
+    time lyapunov is a special case of a Sylvester equation, and can be efficiently solved. For more details, see the
+    docstring for scipy.linalg.solve_discrete_lyapunov
+    """
+
+    gufunc_signature = "(m,m),(m,m)->(m,m)"
+
     def make_node(self, A, B):
         A = as_tensor_variable(A)
         B = as_tensor_variable(B)
@@ -692,7 +868,10 @@ class BilinearSolveDiscreteLyapunov(Op):
         (A, B) = inputs
         X = output_storage[0]
 
-        X[0] = scipy.linalg.solve_discrete_lyapunov(A, B, method="bilinear")
+        out_dtype = node.outputs[0].type.dtype
+        X[0] = scipy.linalg.solve_discrete_lyapunov(A, B, method="bilinear").astype(
+            out_dtype
+        )
 
     def infer_shape(self, fgraph, node, shapes):
         return [shapes[0]]
@@ -714,46 +893,56 @@ class BilinearSolveDiscreteLyapunov(Op):
         return [A_bar, Q_bar]
 
 
-_solve_continuous_lyapunov = SolveContinuousLyapunov()
-_solve_bilinear_direct_lyapunov = cast(typing.Callable, BilinearSolveDiscreteLyapunov())
+_bilinear_solve_discrete_lyapunov = Blockwise(BilinearSolveDiscreteLyapunov())
 
 
-def _direct_solve_discrete_lyapunov(A: "TensorLike", Q: "TensorLike") -> TensorVariable:
-    A_ = as_tensor_variable(A)
-    Q_ = as_tensor_variable(Q)
+def _direct_solve_discrete_lyapunov(
+    A: TensorVariable, Q: TensorVariable
+) -> TensorVariable:
+    r"""
+    Directly solve the discrete Lyapunov equation :math:`A X A^H - X = Q` using the kronecker method of Magnus and
+    Neudecker.
 
-    if "complex" in A_.type.dtype:
-        AA = kron(A_, A_.conj())
+    This involves constructing and inverting an intermediate matrix :math:`A \otimes A`, with shape :math:`N^2 x N^2`.
+    As a result, this method scales poorly with the size of :math:`N`, and should be avoided for large :math:`N`.
+    """
+
+    if A.type.dtype.startswith("complex"):
+        AxA = kron(A, A.conj())
     else:
-        AA = kron(A_, A_)
+        AxA = kron(A, A)
 
-    X = solve(pt.eye(AA.shape[0]) - AA, Q_.ravel())
-    return cast(TensorVariable, reshape(X, Q_.shape))
+    eye = pt.eye(AxA.shape[-1])
+
+    vec_Q = Q.ravel()
+    vec_X = solve(eye - AxA, vec_Q, b_ndim=1)
+
+    return cast(TensorVariable, reshape(vec_X, A.shape))
 
 
 def solve_discrete_lyapunov(
-    A: "TensorLike", Q: "TensorLike", method: Literal["direct", "bilinear"] = "direct"
+    A: TensorLike,
+    Q: TensorLike,
+    method: Literal["direct", "bilinear"] = "bilinear",
 ) -> TensorVariable:
     """Solve the discrete Lyapunov equation :math:`A X A^H - X = Q`.
 
     Parameters
     ----------
-    A
-        Square matrix of shape N x N; must have the same shape as Q
-    Q
-        Square matrix of shape N x N; must have the same shape as A
-    method
-        Solver method used, one of ``"direct"`` or ``"bilinear"``. ``"direct"``
-        solves the problem directly via matrix inversion.  This has a pure
-        PyTensor implementation and can thus be cross-compiled to supported
-        backends, and should be preferred when ``N`` is not large. The direct
-        method scales poorly with the size of ``N``, and the bilinear can be
+    A: TensorLike
+        Square matrix of shape N x N
+    Q: TensorLike
+        Square matrix of shape N x N
+    method: str, one of ``"direct"`` or ``"bilinear"``
+        Solver method used, . ``"direct"`` solves the problem directly via matrix inversion.  This has a pure
+        PyTensor implementation and can thus be cross-compiled to supported backends, and should be preferred when
+         ``N`` is not large. The direct method scales poorly with the size of ``N``, and the bilinear can be
         used in these cases.
 
     Returns
     -------
-        Square matrix of shape ``N x N``, representing the solution to the
-        Lyapunov equation
+    X: TensorVariable
+        Square matrix of shape ``N x N``. Solution to the Lyapunov equation
 
     """
     if method not in ["direct", "bilinear"]:
@@ -761,36 +950,26 @@ def solve_discrete_lyapunov(
             f'Parameter "method" must be one of "direct" or "bilinear", found {method}'
         )
 
+    A = as_tensor_variable(A)
+    Q = as_tensor_variable(Q)
+
     if method == "direct":
-        return _direct_solve_discrete_lyapunov(A, Q)
-    if method == "bilinear":
-        return cast(TensorVariable, _solve_bilinear_direct_lyapunov(A, Q))
+        signature = BilinearSolveDiscreteLyapunov.gufunc_signature
+        X = pt.vectorize(_direct_solve_discrete_lyapunov, signature=signature)(A, Q)
+        return cast(TensorVariable, X)
+
+    elif method == "bilinear":
+        return cast(TensorVariable, _bilinear_solve_discrete_lyapunov(A, Q))
+
+    else:
+        raise ValueError(f"Unknown method {method}")
 
 
-def solve_continuous_lyapunov(A: "TensorLike", Q: "TensorLike") -> TensorVariable:
-    """Solve the continuous Lyapunov equation :math:`A X + X A^H + Q = 0`.
-
-    Parameters
-    ----------
-    A
-        Square matrix of shape ``N x N``; must have the same shape as `Q`.
-    Q
-        Square matrix of shape ``N x N``; must have the same shape as `A`.
-
-    Returns
-    -------
-        Square matrix of shape ``N x N``, representing the solution to the
-        Lyapunov equation
-
-    """
-
-    return cast(TensorVariable, _solve_continuous_lyapunov(A, Q))
-
-
-class SolveDiscreteARE(pt.Op):
+class SolveDiscreteARE(Op):
     __props__ = ("enforce_Q_symmetric",)
+    gufunc_signature = "(m,m),(m,n),(m,m),(n,n)->(m,m)"
 
-    def __init__(self, enforce_Q_symmetric=False):
+    def __init__(self, enforce_Q_symmetric: bool = False):
         self.enforce_Q_symmetric = enforce_Q_symmetric
 
     def make_node(self, A, B, Q, R):
@@ -811,9 +990,8 @@ class SolveDiscreteARE(pt.Op):
         if self.enforce_Q_symmetric:
             Q = 0.5 * (Q + Q.T)
 
-        X[0] = scipy.linalg.solve_discrete_are(A, B, Q, R).astype(
-            node.outputs[0].type.dtype
-        )
+        out_dtype = node.outputs[0].type.dtype
+        X[0] = scipy.linalg.solve_discrete_are(A, B, Q, R).astype(out_dtype)
 
     def infer_shape(self, fgraph, node, shapes):
         return [shapes[0]]
@@ -825,14 +1003,16 @@ class SolveDiscreteARE(pt.Op):
         (dX,) = output_grads
         X = self(A, B, Q, R)
 
-        K_inner = R + pt.linalg.matrix_dot(B.T, X, B)
-        K_inner_inv = pt.linalg.solve(K_inner, pt.eye(R.shape[0]))
-        K = matrix_dot(K_inner_inv, B.T, X, A)
+        K_inner = R + matrix_dot(B.T, X, B)
+
+        # K_inner is guaranteed to be symmetric, because X and R are symmetric
+        K_inner_inv_BT = solve(K_inner, B.T, assume_a="sym")
+        K = matrix_dot(K_inner_inv_BT, X, A)
 
         A_tilde = A - B.dot(K)
 
         dX_symm = 0.5 * (dX + dX.T)
-        S = solve_discrete_lyapunov(A_tilde, dX_symm).astype(dX.type.dtype)
+        S = solve_discrete_lyapunov(A_tilde, dX_symm)
 
         A_bar = 2 * matrix_dot(X, A_tilde, S)
         B_bar = -2 * matrix_dot(X, A_tilde, S, K.T)
@@ -842,30 +1022,45 @@ class SolveDiscreteARE(pt.Op):
         return [A_bar, B_bar, Q_bar, R_bar]
 
 
-def solve_discrete_are(A, B, Q, R, enforce_Q_symmetric=False) -> TensorVariable:
+def solve_discrete_are(
+    A: TensorLike,
+    B: TensorLike,
+    Q: TensorLike,
+    R: TensorLike,
+    enforce_Q_symmetric: bool = False,
+) -> TensorVariable:
     """
     Solve the discrete Algebraic Riccati equation :math:`A^TXA - X - (A^TXB)(R + B^TXB)^{-1}(B^TXA) + Q = 0`.
 
+    Discrete-time Algebraic Riccati equations arise in the context of optimal control and filtering problems, as the
+    solution to Linear-Quadratic Regulators (LQR), Linear-Quadratic-Guassian (LQG) control problems, and as the
+    steady-state covariance of the Kalman Filter.
+
+    Such problems typically have many solutions, but we are generally only interested in the unique *stabilizing*
+    solution. This stable solution, if it exists, will be returned by this function.
+
     Parameters
     ----------
-    A: ArrayLike
+    A: TensorLike
         Square matrix of shape M x M
-    B: ArrayLike
+    B: TensorLike
         Square matrix of shape M x M
-    Q: ArrayLike
+    Q: TensorLike
         Symmetric square matrix of shape M x M
-    R: ArrayLike
+    R: TensorLike
         Square matrix of shape N x N
     enforce_Q_symmetric: bool
         If True, the provided Q matrix is transformed to 0.5 * (Q + Q.T) to ensure symmetry
 
     Returns
     -------
-    X: pt.matrix
+    X: TensorVariable
         Square matrix of shape M x M, representing the solution to the DARE
     """
 
-    return cast(TensorVariable, SolveDiscreteARE(enforce_Q_symmetric)(A, B, Q, R))
+    return cast(
+        TensorVariable, Blockwise(SolveDiscreteARE(enforce_Q_symmetric))(A, B, Q, R)
+    )
 
 
 def _largest_common_dtype(tensors: typing.Sequence[TensorVariable]) -> np.dtype:

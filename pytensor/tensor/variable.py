@@ -344,8 +344,8 @@ class _tensor_py_operators:
         """
         if (len(pattern) == 1) and (isinstance(pattern[0], list | tuple)):
             pattern = pattern[0]
-        op = pt.elemwise.DimShuffle(list(self.type.broadcastable), pattern)
-        return op(self)
+        ds_op = pt.elemwise.DimShuffle(input_ndim=self.type.ndim, new_order=pattern)
+        return ds_op(self)
 
     def flatten(self, ndim=1):
         return pt.basic.flatten(self, ndim)
@@ -598,7 +598,7 @@ class _tensor_py_operators:
 
     def __setitem__(self, key, value):
         raise TypeError(
-            "TensorVariable does not support item assignment. Use the output of `set` or `add` instead."
+            "TensorVariable does not support item assignment. Use the output of `x[idx].set` or `x[idx].inc` instead."
         )
 
     def take(self, indices, axis=None, mode="raise"):
@@ -1045,11 +1045,13 @@ def get_unique_constant_value(x: TensorVariable) -> Number | None:
     if isinstance(x, Constant):
         data = x.data
 
-        if isinstance(data, np.ndarray) and data.ndim > 0:
+        if isinstance(data, np.ndarray) and data.size > 0:
+            if data.size == 1:
+                return data.squeeze()
+
             flat_data = data.ravel()
-            if flat_data.shape[0]:
-                if (flat_data == flat_data[0]).all():
-                    return flat_data[0]
+            if (flat_data == flat_data[0]).all():
+                return flat_data[0]
 
     return None
 

@@ -32,7 +32,6 @@ from pytensor.graph.rewriting.db import EquilibriumDB
 from pytensor.graph.type import HasShape, Type
 from pytensor.link.c.op import COp
 from pytensor.link.c.params_type import ParamsType
-from pytensor.misc.safe_asarray import _asarray
 from pytensor.printing import Printer, min_informative_str, pprint, set_precedence
 from pytensor.raise_op import CheckAndRaise, assert_op
 from pytensor.scalar import int32
@@ -512,7 +511,7 @@ def get_underlying_scalar_constant_value(
                     ret = v.owner.inputs[0].owner.inputs[idx]
                     ret = get_underlying_scalar_constant_value(ret, max_recur=max_recur)
                     # MakeVector can cast implicitly its input in some case.
-                    return _asarray(ret, dtype=v.type.dtype)
+                    return np.asarray(ret, dtype=v.type.dtype)
 
                 # This is needed when we take the grad as the Shape op
                 # are not already changed into MakeVector
@@ -589,7 +588,7 @@ class TensorFromScalar(COp):
         # Currently, pytensor.grad insists that the dtype of the returned
         # gradient has a float dtype, so we use floatX.
         if s.type.dtype in discrete_dtypes:
-            return [s.zeros_like().astype(config.floatX)]
+            return [s.zeros_like(dtype=config.floatX)]
 
         raise NotImplementedError("grad not implemented for complex dtypes")
 
@@ -1113,13 +1112,13 @@ def tril(m, k=0):
     Examples
     --------
     >>> import pytensor.tensor as pt
-    >>> pt.tril(pt.arange(1,13).reshape((4,3)), -1).eval()
+    >>> pt.tril(pt.arange(1, 13).reshape((4, 3)), -1).eval()
     array([[ 0,  0,  0],
            [ 4,  0,  0],
            [ 7,  8,  0],
            [10, 11, 12]])
 
-    >>> pt.tril(pt.arange(3*4*5).reshape((3, 4, 5))).eval()
+    >>> pt.tril(pt.arange(3 * 4 * 5).reshape((3, 4, 5))).eval()
     array([[[ 0,  0,  0,  0,  0],
             [ 5,  6,  0,  0,  0],
             [10, 11, 12,  0,  0],
@@ -1162,7 +1161,7 @@ def triu(m, k=0):
            [ 0,  8,  9],
            [ 0,  0, 12]])
 
-    >>> pt.triu(np.arange(3*4*5).reshape((3, 4, 5))).eval()
+    >>> pt.triu(np.arange(3 * 4 * 5).reshape((3, 4, 5))).eval()
     array([[[ 0,  1,  2,  3,  4],
             [ 0,  6,  7,  8,  9],
             [ 0,  0, 12, 13, 14],
@@ -1834,7 +1833,7 @@ class MakeVector(COp):
         (out,) = out_
         # not calling pytensor._asarray as optimization
         if (out[0] is None) or (out[0].size != len(inputs)):
-            out[0] = _asarray(inputs, dtype=node.outputs[0].dtype)
+            out[0] = np.asarray(inputs, dtype=node.outputs[0].dtype)
         else:
             # assume that out has correct dtype. there is no cheap way to check
             out[0][...] = inputs
@@ -1876,7 +1875,7 @@ class MakeVector(COp):
     def grad(self, inputs, output_gradients):
         # If the output is of an integer dtype, no gradient shall pass
         if self.dtype in discrete_dtypes:
-            return [ipt.zeros_like().astype(config.floatX) for ipt in inputs]
+            return [ipt.zeros_like(dtype=config.floatX) for ipt in inputs]
 
         grads = [output_gradients[0][i] for i in range(len(inputs))]
         return grads
@@ -2042,7 +2041,7 @@ def transpose(x, axes=None):
         # No-op
         return _x
 
-    ret = DimShuffle(tuple(s == 1 for s in _x.type.shape), axes)(_x)
+    ret = _x.dimshuffle(axes)
 
     if _x.name and axes == tuple(range((_x.type.ndim - 1), -1, -1)):
         ret.name = _x.name + ".T"
@@ -2108,9 +2107,9 @@ class Split(COp):
     >>> splits = pt.vector(dtype="int")
 
     You have to declare right away how many split_points there will be.
-    >>> ra, rb, rc = pt.split(x, splits, n_splits = 3, axis = 0)
+    >>> ra, rb, rc = pt.split(x, splits, n_splits=3, axis=0)
     >>> f = function([x, splits], [ra, rb, rc])
-    >>> a, b, c = f([0,1,2,3,4,5], [3, 2, 1])
+    >>> a, b, c = f([0, 1, 2, 3, 4, 5], [3, 2, 1])
     >>> a
     array([0, 1, 2])
     >>> b
@@ -2537,7 +2536,7 @@ class Join(COp):
                     f"Join axis {int(axis)} out of bounds [0, {int(ndim)})"
                 )
 
-            out[0] = _asarray(
+            out[0] = np.asarray(
                 np.concatenate(tens, axis=axis), dtype=node.outputs[0].type.dtype
             )
 
@@ -2831,28 +2830,28 @@ def stack(tensors: Sequence["TensorLike"], axis: int = 0):
     >>> b = pytensor.tensor.type.scalar()
     >>> c = pytensor.tensor.type.scalar()
     >>> x = pytensor.tensor.stack([a, b, c])
-    >>> x.ndim # x is a vector of length 3.
+    >>> x.ndim  # x is a vector of length 3.
     1
     >>> a = pytensor.tensor.type.tensor4()
     >>> b = pytensor.tensor.type.tensor4()
     >>> c = pytensor.tensor.type.tensor4()
     >>> x = pytensor.tensor.stack([a, b, c])
-    >>> x.ndim # x is a 5d tensor.
+    >>> x.ndim  # x is a 5d tensor.
     5
     >>> rval = x.eval(dict((t, np.zeros((2, 2, 2, 2))) for t in [a, b, c]))
-    >>> rval.shape # 3 tensors are stacked on axis 0
+    >>> rval.shape  # 3 tensors are stacked on axis 0
     (3, 2, 2, 2, 2)
     >>> x = pytensor.tensor.stack([a, b, c], axis=3)
     >>> x.ndim
     5
     >>> rval = x.eval(dict((t, np.zeros((2, 2, 2, 2))) for t in [a, b, c]))
-    >>> rval.shape # 3 tensors are stacked on axis 3
+    >>> rval.shape  # 3 tensors are stacked on axis 3
     (2, 2, 2, 3, 2)
     >>> x = pytensor.tensor.stack([a, b, c], axis=-2)
     >>> x.ndim
     5
     >>> rval = x.eval(dict((t, np.zeros((2, 2, 2, 2))) for t in [a, b, c]))
-    >>> rval.shape # 3 tensors are stacked on axis -2
+    >>> rval.shape  # 3 tensors are stacked on axis -2
     (2, 2, 2, 3, 2)
     """
     if not isinstance(tensors, Sequence):
@@ -3518,7 +3517,7 @@ class PermuteRowElements(Op):
                 newdims.append(i)
                 i += 1
 
-        gx = DimShuffle(tuple(s == 1 for s in gx.type.shape), newdims)(gx)
+        gx = gx.dimshuffle(newdims)
         assert gx.type.ndim == x.type.ndim
         assert all(
             s1 == s2
@@ -3892,7 +3891,7 @@ def stacklists(arg):
     >>> from pytensor.tensor import stacklists
     >>> from pytensor.tensor.type import scalars, matrices
     >>> from pytensor import function
-    >>> a, b, c, d = scalars('abcd')
+    >>> a, b, c, d = scalars("abcd")
     >>> X = stacklists([[a, b], [c, d]])
     >>> f = function([a, b, c, d], X)
     >>> f(1, 2, 3, 4)
@@ -3903,10 +3902,10 @@ def stacklists(arg):
     a 2 by 2 grid:
 
     >>> from numpy import ones
-    >>> a, b, c, d = matrices('abcd')
+    >>> a, b, c, d = matrices("abcd")
     >>> X = stacklists([[a, b], [c, d]])
     >>> f = function([a, b, c, d], X)
-    >>> x = ones((4, 4), 'float32')
+    >>> x = ones((4, 4), "float32")
     >>> f(x, x, x, x).shape
     (2, 2, 4, 4)
 

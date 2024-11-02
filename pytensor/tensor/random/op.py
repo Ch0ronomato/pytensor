@@ -10,7 +10,6 @@ from pytensor.configdefaults import config
 from pytensor.graph.basic import Apply, Variable, equal_computations
 from pytensor.graph.op import Op
 from pytensor.graph.replace import _vectorize_node
-from pytensor.misc.safe_asarray import _asarray
 from pytensor.scalar import ScalarVariable
 from pytensor.tensor.basic import (
     as_tensor_variable,
@@ -388,24 +387,17 @@ class RandomVariable(Op):
         return node.inputs[2:]
 
     def perform(self, node, inputs, outputs):
-        rng_var_out, smpl_out = outputs
-
         rng, size, *args = inputs
 
         # Draw from `rng` if `self.inplace` is `True`, and from a copy of `rng` otherwise.
         if not self.inplace:
             rng = copy(rng)
 
-        rng_var_out[0] = rng
-
-        if size is not None:
-            size = tuple(size)
-        smpl_val = self.rng_fn(rng, *([*args, size]))
-
-        if not isinstance(smpl_val, np.ndarray) or str(smpl_val.dtype) != self.dtype:
-            smpl_val = _asarray(smpl_val, dtype=self.dtype)
-
-        smpl_out[0] = smpl_val
+        outputs[0][0] = rng
+        outputs[1][0] = np.asarray(
+            self.rng_fn(rng, *args, None if size is None else tuple(size)),
+            dtype=self.dtype,
+        )
 
     def grad(self, inputs, outputs):
         return [

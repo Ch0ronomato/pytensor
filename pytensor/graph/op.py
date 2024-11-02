@@ -513,6 +513,7 @@ class Op(MetaObject):
         """
         node_input_storage = [storage_map[r] for r in node.inputs]
         node_output_storage = [storage_map[r] for r in node.outputs]
+        node_compute_map = [compute_map[r] for r in node.outputs]
 
         if debug and hasattr(self, "debug_perform"):
             p = node.op.debug_perform
@@ -520,10 +521,16 @@ class Op(MetaObject):
             p = node.op.perform
 
         @is_thunk_type
-        def rval(p=p, i=node_input_storage, o=node_output_storage, n=node):
+        def rval(
+            p=p,
+            i=node_input_storage,
+            o=node_output_storage,
+            n=node,
+            cm=node_compute_map,
+        ):
             r = p(n, [x[0] for x in i], o)
-            for o in node.outputs:
-                compute_map[o][0] = True
+            for entry in cm:
+                entry[0] = True
             return r
 
         rval.inputs = node_input_storage
@@ -582,6 +589,12 @@ class Op(MetaObject):
             node, storage_map=storage_map, compute_map=compute_map, impl="py"
         )
         return self.make_py_thunk(node, storage_map, compute_map, no_recycling)
+
+    def inplace_on_inputs(self, allowed_inplace_inputs: list[int]) -> "Op":
+        """Try to return a version of self that tries to inplace in as many as `allowed_inplace_inputs`."""
+        # TODO: Document this in the Create your own Op docs
+        # By default, do nothing
+        return self
 
     def __str__(self):
         return getattr(type(self), "__name__", super().__str__())

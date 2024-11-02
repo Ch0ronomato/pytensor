@@ -39,7 +39,7 @@ def test_jax_Dimshuffle():
     compare_jax_and_py(x_fg, [np.c_[[1.0, 2.0, 3.0, 4.0]].astype(config.floatX)])
 
     a_pt = tensor(dtype=config.floatX, shape=(None, 1))
-    x = pt_elemwise.DimShuffle([False, True], (0,))(a_pt)
+    x = pt_elemwise.DimShuffle(input_ndim=2, new_order=(0,))(a_pt)
     x_fg = FunctionGraph([a_pt], [x])
     compare_jax_and_py(x_fg, [np.c_[[1.0, 2.0, 3.0, 4.0]].astype(config.floatX)])
 
@@ -109,7 +109,7 @@ def test_softmax_grad(axis):
     compare_jax_and_py(fgraph, [get_test_value(i) for i in fgraph.inputs])
 
 
-@pytest.mark.parametrize("size", [(10, 10), (1000, 1000), (10000, 10000)])
+@pytest.mark.parametrize("size", [(10, 10), (1000, 1000)])
 @pytest.mark.parametrize("axis", [0, 1])
 def test_logsumexp_benchmark(size, axis, benchmark):
     X = pt.matrix("X")

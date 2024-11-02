@@ -17,7 +17,6 @@ from pytensor.graph.op import Op
 from pytensor.link.c.op import COp
 from pytensor.link.c.params_type import ParamsType
 from pytensor.link.c.type import EnumList, Generic
-from pytensor.misc.safe_asarray import _asarray
 from pytensor.raise_op import Assert
 from pytensor.scalar import int32 as int_t
 from pytensor.scalar import upcast
@@ -41,7 +40,7 @@ from pytensor.tensor.math import (
 )
 from pytensor.tensor.math import max as pt_max
 from pytensor.tensor.math import sum as pt_sum
-from pytensor.tensor.shape import specify_broadcastable
+from pytensor.tensor.shape import Shape_i
 from pytensor.tensor.subtensor import advanced_inc_subtensor1, set_subtensor
 from pytensor.tensor.type import TensorType, dvector, int_dtypes, integer_dtypes, vector
 from pytensor.tensor.variable import TensorVariable
@@ -267,13 +266,13 @@ def searchsorted(x, v, side="left", sorter=None):
     >>> from pytensor.tensor import extra_ops
     >>> x = pt.dvector("x")
     >>> idx = x.searchsorted(3)
-    >>> idx.eval({x: [1,2,3,4,5]})
+    >>> idx.eval({x: [1, 2, 3, 4, 5]})
     array(2)
-    >>> extra_ops.searchsorted([1,2,3,4,5], 3).eval()
+    >>> extra_ops.searchsorted([1, 2, 3, 4, 5], 3).eval()
     array(2)
-    >>> extra_ops.searchsorted([1,2,3,4,5], 3, side='right').eval()
+    >>> extra_ops.searchsorted([1, 2, 3, 4, 5], 3, side="right").eval()
     array(3)
-    >>> extra_ops.searchsorted([1,2,3,4,5], [-10, 10, 2, 3]).eval()
+    >>> extra_ops.searchsorted([1, 2, 3, 4, 5], [-10, 10, 2, 3]).eval()
     array([0, 5, 1, 2])
 
     .. versionadded:: 0.9
@@ -608,11 +607,6 @@ def squeeze(x, axis=None):
     if _x.ndim == 0:
         # Nothing could be squeezed
         return _x
-
-    # `Dimshuffle` raises when we try to drop an axis that is not statically broadcastable.
-    # We add a `specify_broadcastable` instead of raising.
-    non_broadcastable_axis = [i for i in axis if not _x.broadcastable[i]]
-    _x = specify_broadcastable(_x, *non_broadcastable_axis)
 
     return _x.dimshuffle([i for i in range(_x.ndim) if i not in axis])
 
@@ -1176,7 +1170,7 @@ class Unique(Op):
 
     >>> x = pytensor.tensor.vector()
     >>> f = pytensor.function([x], Unique(True, True, False)(x))
-    >>> f([1, 2., 3, 4, 3, 2, 1.])
+    >>> f([1, 2.0, 3, 4, 3, 2, 1.0])
     [array([1., 2., 3., 4.]), array([0, 1, 2, 3]), array([0, 1, 2, 3, 2, 1, 0])]
 
     >>> y = pytensor.tensor.matrix()
@@ -1194,23 +1188,22 @@ class Unique(Op):
         self.return_index = return_index
         self.return_inverse = return_inverse
         self.return_counts = return_counts
+        if axis is not None and axis < 0:
+            raise ValueError("Axis cannot be negative.")
         self.axis = axis
 
     def make_node(self, x):
         x = ptb.as_tensor_variable(x)
-        self_axis = self.axis
-        if self_axis is None:
+        axis = self.axis
+        if axis is None:
             out_shape = (None,)
         else:
-            if self_axis < 0:
-                self_axis += x.type.ndim
-            if self_axis < 0 or self_axis >= x.type.ndim:
+            if axis >= x.type.ndim:
                 raise ValueError(
-                    f"Unique axis {self.axis} is outside of input ndim = {x.type.ndim}"
+                    f"Axis {axis} out of range for input {x} with ndim={x.type.ndim}."
                 )
             out_shape = tuple(
-                s if s == 1 and axis != self_axis else None
-                for axis, s in enumerate(x.type.shape)
+                None if dim == axis else s for dim, s in enumerate(x.type.shape)
             )
 
         outputs = [TensorType(dtype=x.dtype, shape=out_shape)()]
@@ -1224,60 +1217,37 @@ class Unique(Op):
         return Apply(self, [x], outputs)
 
     def perform(self, node, inputs, output_storage):
-        x = inputs[0]
-        z = output_storage
-        param = {}
-        if self.return_index:
-            param["return_index"] = True
-        if self.return_inverse:
-            param["return_inverse"] = True
-        if self.return_counts:
-            param["return_counts"] = True
-        if self.axis is not None:
-            param["axis"] = self.axis
-        outs = np.unique(x, **param)
-        if (
-            (not self.return_inverse)
-            and (not self.return_index)
-            and (not self.return_counts)
-        ):
-            z[0][0] = outs
-        else:
+        [x] = inputs
+        outs = np.unique(
+            x,
+            return_index=self.return_index,
+            return_inverse=self.return_inverse,
+            return_counts=self.return_counts,
+            axis=self.axis,
+        )
+        if isinstance(outs, tuple):
             for i in range(len(outs)):
-                z[i][0] = outs[i]
+                output_storage[i][0] = outs[i]
+        else:
+            output_storage[0][0] = outs
 
     def infer_shape(self, fgraph, node, i0_shapes):
-        ret = fgraph.shape_feature.default_infer_shape(fgraph, node, i0_shapes)
-        if self.axis is not None:
-            self_axis = self.axis
-            ndim = len(i0_shapes[0])
-            if self_axis < 0:
-                self_axis += ndim
-            if self_axis < 0 or self_axis >= ndim:
-                raise RuntimeError(
-                    f"Unique axis `{self.axis}` is outside of input ndim = {ndim}."
-                )
-            ret[0] = tuple(
-                fgraph.shape_feature.shape_ir(i, node.outputs[0]) for i in range(ndim)
-            )
-        if self.return_inverse:
-            if self.axis is None:
-                shape = (prod(i0_shapes[0]),)
-            else:
-                shape = (i0_shapes[0][self_axis],)
-            if self.return_index:
-                ret[2] = shape
-                return ret
-            ret[1] = shape
-            return ret
-        return ret
+        [x_shape] = i0_shapes
+        shape0_op = Shape_i(0)
+        out_shapes = [(shape0_op(out),) for out in node.outputs]
 
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-        # For backwards compatibility with pickled instances of Unique that
-        # did not have the axis parameter specified
-        if "axis" not in state:
-            self.axis = None
+        axis = self.axis
+        if axis is not None:
+            shape = list(x_shape)
+            shape[axis] = Shape_i(axis)(node.outputs[0])
+            out_shapes[0] = tuple(shape)
+
+        if self.return_inverse:
+            shape = prod(x_shape) if self.axis is None else x_shape[axis]
+            return_index_out_idx = 2 if self.return_index else 1
+            out_shapes[return_index_out_idx] = (shape,)
+
+        return out_shapes
 
 
 def unique(
@@ -1293,6 +1263,9 @@ def unique(
         * the number of times each unique value comes up in the input array
 
     """
+    ar = as_tensor_variable(ar)
+    if axis is not None:
+        axis = normalize_axis_index(axis, ar.ndim)
     return Unique(return_index, return_inverse, return_counts, axis)(ar)
 
 
@@ -1333,7 +1306,7 @@ class UnravelIndex(Op):
         res = np.unravel_index(indices, dims, order=self.order)
         assert len(res) == len(out)
         for i in range(len(out)):
-            ret = _asarray(res[i], node.outputs[0].dtype)
+            ret = np.asarray(res[i], node.outputs[0].dtype)
             if ret.base is not None:
                 # NumPy will return a view when it can.
                 # But we don't want that.
@@ -1408,7 +1381,7 @@ class RavelMultiIndex(Op):
     def perform(self, node, inp, out):
         multi_index, dims = inp[:-1], inp[-1]
         res = np.ravel_multi_index(multi_index, dims, mode=self.mode, order=self.order)
-        out[0][0] = _asarray(res, node.outputs[0].dtype)
+        out[0][0] = np.asarray(res, node.outputs[0].dtype)
 
 
 def ravel_multi_index(multi_index, dims, mode="raise", order="C"):

@@ -42,7 +42,6 @@ from pytensor.tensor.shape import (
     Shape_i,
     SpecifyShape,
     Unbroadcast,
-    shape_i,
     specify_shape,
     unbroadcast,
 )
@@ -926,11 +925,7 @@ def local_reshape_to_dimshuffle(fgraph, node):
     if index != output.type.ndim:
         inner = op.__class__(len(new_output_shape))(inp, new_output_shape)
         copy_stack_trace(output, inner)
-        new_node = [
-            DimShuffle(tuple(s == 1 for s in inner.type.shape), dimshuffle_new_order)(
-                inner
-            )
-        ]
+        new_node = [inner.dimshuffle(dimshuffle_new_order)]
         copy_stack_trace(output, new_node)
         return new_node
 
@@ -1060,7 +1055,7 @@ def local_Shape_of_SpecifyShape(fgraph, node):
     # Replace `NoneConst` by `shape_i`
     for i, sh in enumerate(shape):
         if NoneConst.equals(sh):
-            shape[i] = shape_i(x, i, fgraph)
+            shape[i] = x.shape[i]
 
     return [stack(shape).astype(np.int64)]
 

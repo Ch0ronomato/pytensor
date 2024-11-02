@@ -18,7 +18,6 @@ from pytensor.graph.type import Type
 from pytensor.graph.utils import MethodNotDefined
 from pytensor.link.c.op import COp
 from pytensor.link.c.params_type import ParamsType
-from pytensor.misc.safe_asarray import _asarray
 from pytensor.printing import Printer, pprint, set_precedence
 from pytensor.scalar.basic import ScalarConstant, ScalarVariable
 from pytensor.tensor import (
@@ -38,7 +37,7 @@ from pytensor.tensor.blockwise import vectorize_node_fallback
 from pytensor.tensor.elemwise import DimShuffle
 from pytensor.tensor.exceptions import AdvancedIndexingError, NotScalarConstantError
 from pytensor.tensor.math import clip
-from pytensor.tensor.shape import Reshape, shape_i, specify_broadcastable
+from pytensor.tensor.shape import Reshape, Shape_i, specify_broadcastable
 from pytensor.tensor.type import (
     TensorType,
     bscalar,
@@ -946,7 +945,7 @@ class Subtensor(COp):
         x = inputs[0]
         rest = inputs[1:]
         if x.dtype in discrete_dtypes:
-            first = x.zeros_like().astype(config.floatX)
+            first = x.zeros_like(dtype=config.floatX)
         else:
             # For best optimization, we let this as an inc.
             # This allow the opt local_IncSubtensor_serialize to apply first.
@@ -2028,7 +2027,6 @@ def _sum_grad_over_bcasted_dims(x, gx):
     if gx.broadcastable != x.broadcastable:
         x_dim_added = gx.ndim - x.ndim
         x_broad = (True,) * x_dim_added + x.broadcastable
-        assert sum(gx.broadcastable) <= sum(x_broad)
         axis_to_sum = []
         for i in range(gx.ndim):
             if gx.broadcastable[i] is False and x_broad[i] is True:
@@ -2046,7 +2044,14 @@ def _sum_grad_over_bcasted_dims(x, gx):
             for i in range(x_dim_added):
                 assert gx.broadcastable[i]
             gx = gx.dimshuffle(*range(x_dim_added, gx.ndim))
-        assert gx.broadcastable == x.broadcastable
+        # Broadcastable flags of gx can be the same or more specific than x.
+        # Only unallowed case is x_dim_b == True and gx_dim_b == False.
+        assert not any(
+            x_dim_b and not gx_dim_b
+            for x_dim_b, gx_dim_b in zip(
+                x.type.broadcastable, gx.type.broadcastable, strict=True
+            )
+        ), (x.type, gx.type)
     return gx
 
 
@@ -2093,7 +2098,7 @@ class AdvancedSubtensor1(COp):
         # if they don't, that should be an error (no array can have that
         # many elements on a 32-bit arch).
         if i.dtype != np.intp:
-            i_ = _asarray(i, dtype=np.intp)
+            i_ = np.asarray(i, dtype=np.intp)
             if not np.can_cast(i.dtype, np.intp):
                 # Check if there was actually an incorrect conversion
                 if np.any(i != i_):
@@ -2622,6 +2627,11 @@ def as_index_variable(idx):
     idx = as_tensor_variable(idx)
     if idx.type.dtype not in discrete_dtypes:
         raise TypeError("index must be integers or a boolean mask")
+    if idx.type.dtype == "bool" and idx.type.ndim == 0:
+        raise NotImplementedError(
+            "Boolean scalar indexing not implemented. "
+            "Open an issue in https://github.com/pymc-devs/pytensor/issues if you need this behavior."
+        )
     return idx
 
 
@@ -2705,10 +2715,9 @@ class AdvancedSubtensor(Op):
         index_shapes = []
         for idx, ishape in zip(indices, ishapes[1:]):
             # Mixed bool indexes are converted to nonzero entries
+            shape0_op = Shape_i(0)
             if is_bool_index(idx):
-                index_shapes.extend(
-                    (shape_i(nz_dim, 0, fgraph=fgraph),) for nz_dim in nonzero(idx)
-                )
+                index_shapes.extend((shape0_op(nz_dim),) for nz_dim in nonzero(idx))
             # The `ishapes` entries for `SliceType`s will be None, and
             # we need to give `indexed_result_shape` the actual slices.
             elif isinstance(getattr(idx, "type", None), SliceType):

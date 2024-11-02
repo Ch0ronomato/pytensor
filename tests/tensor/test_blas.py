@@ -19,7 +19,6 @@ from pytensor.gradient import grad
 from pytensor.graph.fg import FunctionGraph
 from pytensor.graph.rewriting.basic import in2out
 from pytensor.graph.utils import InconsistencyError
-from pytensor.misc.safe_asarray import _asarray
 from pytensor.tensor import inplace
 from pytensor.tensor.basic import as_tensor_variable
 from pytensor.tensor.blas import (
@@ -309,7 +308,7 @@ class TestGemm:
         C = rng.random((4, 5))[:, :4]
 
         def t(z, x, y, a=1.0, b=0.0, l="c|py", dt="float64"):
-            z, a, x, y, b = (_asarray(p, dtype=dt) for p in (z, a, x, y, b))
+            z, a, x, y, b = (np.asarray(p, dtype=dt) for p in (z, a, x, y, b))
             # z_orig = z.copy()
             z_after = self._gemm(z, a, x, y, b)
 
@@ -368,7 +367,7 @@ class TestGemm:
         C = rng.random((4, 4, 3))
 
         def t(z, x, y, a=1.0, b=0.0, l="c|py", dt="float64"):
-            z, a, x, y, b = (_asarray(p, dtype=dt) for p in (z, a, x, y, b))
+            z, a, x, y, b = (np.asarray(p, dtype=dt) for p in (z, a, x, y, b))
             z_orig = z.copy()
             z_after = np.zeros_like(z_orig)
             for i in range(3):
@@ -593,9 +592,9 @@ class TestAsScalar:
         b = pt.constant(np.asarray([[[0.5]]]))
         b2 = b.dimshuffle()
         assert b2.ndim == 0
-        d_a = DimShuffle([], [])(a)
-        d_b = DimShuffle([True, True, True], [0, 2, 1])(b)
-        d_a2 = DimShuffle([], ["x", "x", "x"])(a)
+        d_a = DimShuffle(input_ndim=0, new_order=[])(a)
+        d_b = DimShuffle(input_ndim=3, new_order=[0, 2, 1])(b)
+        d_a2 = DimShuffle(input_ndim=0, new_order=["x", "x", "x"])(a)
 
         assert _as_scalar(a) == a
         assert _as_scalar(b) != b
@@ -607,13 +606,13 @@ class TestAsScalar:
         # Test that it fails on nonscalar constants
         a = pt.constant(np.ones(5))
         assert _as_scalar(a) is None
-        assert _as_scalar(DimShuffle([False], [0, "x"])(a)) is None
+        assert _as_scalar(DimShuffle(input_ndim=1, new_order=[0, "x"])(a)) is None
 
     def test_basic_2(self):
         # Test that it works on scalar variables
         a = dscalar()
-        d_a = DimShuffle([], [])(a)
-        d_a2 = DimShuffle([], ["x", "x"])(a)
+        d_a = DimShuffle(input_ndim=0, new_order=[])(a)
+        d_a2 = DimShuffle(input_ndim=0, new_order=["x", "x"])(a)
 
         assert _as_scalar(a) is a
         assert _as_scalar(d_a) is a
@@ -623,13 +622,15 @@ class TestAsScalar:
         # Test that it fails on nonscalar variables
         a = matrix()
         assert _as_scalar(a) is None
-        assert _as_scalar(DimShuffle([False, False], [0, "x", 1])(a)) is None
+        assert _as_scalar(DimShuffle(input_ndim=2, new_order=[0, "x", 1])(a)) is None
 
 
 class TestRealMatrix:
     def test_basic(self):
-        assert _is_real_matrix(DimShuffle([False, False], [1, 0])(matrix()))
-        assert not _is_real_matrix(DimShuffle([False], ["x", 0])(dvector()))
+        assert _is_real_matrix(DimShuffle(input_ndim=2, new_order=[1, 0])(matrix()))
+        assert not _is_real_matrix(
+            DimShuffle(input_ndim=1, new_order=["x", 0])(dvector())
+        )
 
 
 """
@@ -1493,8 +1494,8 @@ class TestGemv(unittest_tools.OptimizationTestMixin):
     def test_gemv_dimensions(self):
         A = matrix("A")
         x, y = vectors("x", "y")
-        alpha = shared(_asarray(1.0, dtype=config.floatX), name="alpha")
-        beta = shared(_asarray(1.0, dtype=config.floatX), name="beta")
+        alpha = shared(np.asarray(1.0, dtype=config.floatX), name="alpha")
+        beta = shared(np.asarray(1.0, dtype=config.floatX), name="beta")
 
         z = beta * y + alpha * dot(A, x)
         f = function([A, x, y], z)
@@ -2090,7 +2091,7 @@ class TestBlasStrides:
     mode = mode.including("fast_run").excluding("gpu", "c_blas", "scipy_blas")
 
     def random(self, *shape, rng=None):
-        return _asarray(rng.random(shape), dtype=self.dtype)
+        return np.asarray(rng.random(shape), dtype=self.dtype)
 
     def cmp_dot22(self, b_shp, c_shp, rng):
         av = np.zeros((0, 0), dtype=self.dtype)

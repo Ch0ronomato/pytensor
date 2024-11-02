@@ -23,7 +23,6 @@ from pytensor.graph.basic import Variable, ancestors, applys_between
 from pytensor.graph.fg import FunctionGraph
 from pytensor.graph.replace import vectorize_node
 from pytensor.link.c.basic import DualLinker
-from pytensor.misc.safe_asarray import _asarray
 from pytensor.printing import pprint
 from pytensor.raise_op import Assert
 from pytensor.tensor import blas, blas_c
@@ -94,6 +93,7 @@ from pytensor.tensor.math import (
     max_and_argmax,
     maximum,
     mean,
+    median,
     min,
     minimum,
     mod,
@@ -1802,8 +1802,8 @@ class TestBitwise:
         for dtype in self.dtype:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
             fn = inplace_func([x, y], x | y)
-            l = _asarray([0, 0, 1, 1], dtype=dtype)
-            r = _asarray([0, 1, 0, 1], dtype=dtype)
+            l = np.asarray([0, 0, 1, 1], dtype=dtype)
+            r = np.asarray([0, 1, 0, 1], dtype=dtype)
             v = fn(l, r)
             assert np.all(v == operator.or_(l, r)), (l, r, v)
 
@@ -1811,8 +1811,8 @@ class TestBitwise:
         for dtype in self.dtype:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
             fn = inplace_func([x, y], x ^ y)
-            l = _asarray([0, 0, 1, 1], dtype=dtype)
-            r = _asarray([0, 1, 0, 1], dtype=dtype)
+            l = np.asarray([0, 0, 1, 1], dtype=dtype)
+            r = np.asarray([0, 1, 0, 1], dtype=dtype)
             v = fn(l, r)
             assert np.all(v == operator.xor(l, r)), (l, r, v)
 
@@ -1820,8 +1820,8 @@ class TestBitwise:
         for dtype in self.dtype:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
             fn = inplace_func([x, y], x & y)
-            l = _asarray([0, 0, 1, 1], dtype=dtype)
-            r = _asarray([0, 1, 0, 1], dtype=dtype)
+            l = np.asarray([0, 0, 1, 1], dtype=dtype)
+            r = np.asarray([0, 1, 0, 1], dtype=dtype)
             v = fn(l, r)
             assert np.all(v == operator.and_(l, r)), (l, r, v)
 
@@ -1836,7 +1836,7 @@ class TestBitwise:
                 [0, 1, 0, 1],
                 [-1, 2**16, 2**16 - 1],
             ]:
-                l = _asarray([0, 0, 1, 1], dtype=dtype)
+                l = np.asarray([0, 0, 1, 1], dtype=dtype)
                 v = fn(l)
                 assert np.all(v == ~l), (l, v)
 
@@ -3210,52 +3210,56 @@ class TestMeanDtype:
             # TODO FIXME: This is a bad test
             f(data)
 
-    @pytest.mark.slow
-    def test_mean_custom_dtype(self):
+    @pytest.mark.parametrize(
+        "input_dtype",
+        (
+            "bool",
+            "uint16",
+            "int8",
+            "int64",
+            "float16",
+            "float32",
+            "float64",
+            "complex64",
+            "complex128",
+        ),
+    )
+    @pytest.mark.parametrize(
+        "sum_dtype",
+        (
+            "bool",
+            "uint16",
+            "int8",
+            "int64",
+            "float16",
+            "float32",
+            "float64",
+            "complex64",
+            "complex128",
+        ),
+    )
+    @pytest.mark.parametrize("axis", [None, ()])
+    def test_mean_custom_dtype(self, input_dtype, sum_dtype, axis):
         # Test the ability to provide your own output dtype for a mean.
 
-        # We try multiple axis combinations even though axis should not matter.
-        axes = [None, 0, 1, [], [0], [1], [0, 1]]
-        idx = 0
-        for input_dtype in map(str, ps.all_types):
-            x = matrix(dtype=input_dtype)
-            for sum_dtype in map(str, ps.all_types):
-                axis = axes[idx % len(axes)]
-                # If the inner sum cannot be created, it will raise a
-                # TypeError.
-                try:
-                    mean_var = x.mean(dtype=sum_dtype, axis=axis)
-                except TypeError:
-                    pass
-                else:
-                    # Executed if no TypeError was raised
-                    if sum_dtype in discrete_dtypes:
-                        assert mean_var.dtype == "float64", (mean_var.dtype, sum_dtype)
-                    else:
-                        assert mean_var.dtype == sum_dtype, (mean_var.dtype, sum_dtype)
-                    if (
-                        "complex" in input_dtype or "complex" in sum_dtype
-                    ) and input_dtype != sum_dtype:
-                        continue
-                    f = function([x], mean_var)
-                    data = np.random.random((3, 4)) * 10
-                    data = data.astype(input_dtype)
-                    # TODO FIXME: This is a bad test
-                    f(data)
-                    # Check that we can take the gradient, when implemented
-                    if "complex" in mean_var.dtype:
-                        continue
-                    try:
-                        grad(mean_var.sum(), x, disconnected_inputs="ignore")
-                    except NotImplementedError:
-                        # TrueDiv does not seem to have a gradient when
-                        # the numerator is complex.
-                        if mean_var.dtype in complex_dtypes:
-                            pass
-                        else:
-                            raise
+        x = matrix(dtype=input_dtype)
+        # If the inner sum cannot be created, it will raise a TypeError.
+        mean_var = x.mean(dtype=sum_dtype, axis=axis)
+        if sum_dtype in discrete_dtypes:
+            assert mean_var.dtype == "float64", (mean_var.dtype, sum_dtype)
+        else:
+            assert mean_var.dtype == sum_dtype, (mean_var.dtype, sum_dtype)
 
-                idx += 1
+        f = function([x], mean_var, mode="FAST_COMPILE")
+        data = np.ones((2, 1)).astype(input_dtype)
+        if axis != ():
+            expected_res = np.array(2).astype(sum_dtype) / 2
+        else:
+            expected_res = data
+        np.testing.assert_allclose(f(data), expected_res)
+
+        if "complex" not in mean_var.dtype:
+            grad(mean_var.sum(), x, disconnected_inputs="ignore")
 
     def test_mean_precision(self):
         # Check that the default accumulator precision is sufficient
@@ -3732,3 +3736,33 @@ def test_nan_to_num(nan, posinf, neginf):
         out,
         np.nan_to_num(y, nan=nan, posinf=posinf, neginf=neginf),
     )
+
+
+@pytest.mark.parametrize(
+    "ndim, axis",
+    [
+        (2, None),
+        (2, 1),
+        (2, (0, 1)),
+        (3, None),
+        (3, (1, 2)),
+        (4, (1, 3, 0)),
+    ],
+)
+def test_median(ndim, axis):
+    # Generate random data with both odd and even lengths
+    shape_even = np.arange(1, ndim + 1) * 2
+    shape_odd = shape_even - 1
+
+    data_even = np.random.rand(*shape_even)
+    data_odd = np.random.rand(*shape_odd)
+
+    x = tensor(dtype="float64", shape=(None,) * ndim)
+    f = function([x], median(x, axis=axis))
+    result_odd = f(data_odd)
+    result_even = f(data_even)
+    expected_odd = np.median(data_odd, axis=axis)
+    expected_even = np.median(data_even, axis=axis)
+
+    assert np.allclose(result_odd, expected_odd)
+    assert np.allclose(result_even, expected_even)

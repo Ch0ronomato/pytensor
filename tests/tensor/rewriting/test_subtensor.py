@@ -10,7 +10,7 @@ from pytensor.compile.mode import Mode, get_default_mode, get_mode
 from pytensor.compile.ops import DeepCopyOp
 from pytensor.configdefaults import config
 from pytensor.graph import FunctionGraph, vectorize_graph
-from pytensor.graph.basic import Constant, Variable, ancestors
+from pytensor.graph.basic import Constant, Variable, ancestors, equal_computations
 from pytensor.graph.rewriting.basic import check_stack_trace
 from pytensor.graph.rewriting.db import RewriteDatabaseQuery
 from pytensor.graph.rewriting.utils import rewrite_graph
@@ -2402,3 +2402,76 @@ def test_local_blockwise_advanced_inc_subtensor(set_instead_of_inc):
     else:
         expected_out[:, :, core_idxs] += test_y
     np.testing.assert_allclose(fn(test_x, test_y), expected_out)
+
+
+class TestUselessSlice:
+    def test_positive_step(self):
+        # When steps are positive, default start and end are `0` and `len(dim)`
+        x = tensor(shape=(3, 5, None, 9), dtype="float64")
+        test_x = np.random.normal(size=(3, 5, 8, 9))
+
+        y = x[0:3:1, 1:5:2, 0:7:1, 0:9:1]
+        f = pytensor.function([x], y)
+
+        # Get the DeepCopy input and assert that the Op is a DeepCopy
+        deep_copy_node = f.maker.fgraph.outputs[0].owner
+        assert isinstance(deep_copy_node.op, DeepCopyOp)
+
+        rewritten_y = deep_copy_node.inputs[0]
+        expected_y = x[None:None:None, 1:None:2, None:7:None]
+        assert equal_computations([rewritten_y], [expected_y])
+
+        np.testing.assert_allclose(
+            f(test_x),
+            # Use the unoptimized slice to make sure our rewrite logic is correct
+            test_x[0:3:1, 1:5:2, 0:7:1, 0:9:1],
+        )
+
+    def test_negative_step(self):
+        # When steps are negative, default start and end are `-1` and `-len(dim) - 1`
+        x = tensor(shape=(3, 5, None, 9), dtype="float64")
+        test_x = np.random.normal(size=(3, 5, 8, 9))
+
+        y = x[-1:-4:-1, 0:5:-2, -1:-9:-1, 0:9:None]
+        f = pytensor.function([x], y)
+
+        # Get the DeepCopy input and assert that the Op is a DeepCopy
+        deep_copy_node = f.maker.fgraph.outputs[0].owner
+        assert isinstance(deep_copy_node.op, DeepCopyOp)
+
+        rewritten_y = deep_copy_node.inputs[0]
+        expected_y = x[None:None:-1, 0:5:-2, None:-9:-1]
+        assert equal_computations([rewritten_y], [expected_y])
+
+        np.testing.assert_allclose(
+            f(test_x),
+            test_x[-1:-4:-1, 0:5:-2, -1:-9:-1, 0:9:None],
+        )
+
+    def test_unknown_step(self):
+        # If step isn't known, we can't canonicalize start and stop points
+        step = pt.scalar("step", dtype=int)
+        x = tensor(shape=(3, 5, None), dtype="float64")
+        test_x = np.random.normal(size=(3, 5, 7))
+
+        y = x[0:3:step, -1:-6:-step, ::]
+        # Need this rewrite when `FAST_COMPILE` otherwise step = -1 * step instead of neg(step)
+        mode = get_default_mode().including("local_mul_specialize")
+        f = pytensor.function([x, step], y, mode=mode)
+
+        # Get the DeepCopy input and assert that the Op is a DeepCopy
+        deep_copy_node = f.maker.fgraph.outputs[0].owner
+        assert isinstance(deep_copy_node.op, DeepCopyOp)
+
+        rewritten_y = deep_copy_node.inputs[0]
+        expected_y = x[0:3:step, -1:-6:-step]
+        assert equal_computations([rewritten_y], [expected_y])
+
+        np.testing.assert_allclose(
+            f(test_x, 1),
+            test_x[0:3:1, -1:-6:-1, ::],
+        )
+        np.testing.assert_allclose(
+            f(test_x, -2),
+            test_x[0:3:-2, -1:-6:2, ::],
+        )

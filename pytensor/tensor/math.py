@@ -14,7 +14,6 @@ from pytensor.graph.op import Op
 from pytensor.graph.replace import _vectorize_node
 from pytensor.link.c.op import COp
 from pytensor.link.c.params_type import ParamsType
-from pytensor.misc.safe_asarray import _asarray
 from pytensor.printing import pprint
 from pytensor.raise_op import Assert
 from pytensor.scalar.basic import BinaryScalarOp
@@ -33,7 +32,6 @@ from pytensor.tensor.basic import (
 from pytensor.tensor.blockwise import Blockwise, vectorize_node_fallback
 from pytensor.tensor.elemwise import (
     CAReduce,
-    DimShuffle,
     Elemwise,
     get_normalized_batch_axes,
     scalar_elemwise,
@@ -203,7 +201,7 @@ class Argmax(COp):
         new_shape = (*kept_shape, np.prod(reduced_shape, dtype="int64"))
         reshaped_x = transposed_x.reshape(new_shape)
 
-        max_idx[0] = _asarray(np.argmax(reshaped_x, axis=-1), dtype="int64")
+        max_idx[0] = np.asarray(np.argmax(reshaped_x, axis=-1), dtype="int64")
 
     def c_code(self, node, name, inp, out, sub):
         (x,) = inp
@@ -731,32 +729,32 @@ def isclose(a, b, rtol=1.0e-5, atol=1.0e-8, equal_nan=False):
     --------
     >>> import pytensor
     >>> import numpy as np
-    >>> a = _asarray([1e10, 1e-7], dtype="float64")
-    >>> b = _asarray([1.00001e10, 1e-8], dtype="float64")
+    >>> a = np.array([1e10, 1e-7], dtype="float64")
+    >>> b = np.array([1.00001e10, 1e-8], dtype="float64")
     >>> pytensor.tensor.isclose(a, b).eval()
     array([ True, False])
-    >>> a = _asarray([1e10, 1e-8], dtype="float64")
-    >>> b = _asarray([1.00001e10, 1e-9], dtype="float64")
+    >>> a = np.array([1e10, 1e-8], dtype="float64")
+    >>> b = np.array([1.00001e10, 1e-9], dtype="float64")
     >>> pytensor.tensor.isclose(a, b).eval()
     array([ True,  True])
-    >>> a = _asarray([1e10, 1e-8], dtype="float64")
-    >>> b = _asarray([1.0001e10, 1e-9], dtype="float64")
+    >>> a = np.array([1e10, 1e-8], dtype="float64")
+    >>> b = np.array([1.0001e10, 1e-9], dtype="float64")
     >>> pytensor.tensor.isclose(a, b).eval()
     array([False,  True])
-    >>> a = _asarray([1.0, np.nan], dtype="float64")
-    >>> b = _asarray([1.0, np.nan], dtype="float64")
+    >>> a = np.array([1.0, np.nan], dtype="float64")
+    >>> b = np.array([1.0, np.nan], dtype="float64")
     >>> pytensor.tensor.isclose(a, b).eval()
     array([ True, False])
-    >>> a = _asarray([1.0, np.nan], dtype="float64")
-    >>> b = _asarray([1.0, np.nan], dtype="float64")
+    >>> a = np.array([1.0, np.nan], dtype="float64")
+    >>> b = np.array([1.0, np.nan], dtype="float64")
     >>> pytensor.tensor.isclose(a, b, equal_nan=True).eval()
     array([ True,  True])
-    >>> a = _asarray([1.0, np.inf], dtype="float64")
-    >>> b = _asarray([1.0, -np.inf], dtype="float64")
+    >>> a = np.array([1.0, np.inf], dtype="float64")
+    >>> b = np.array([1.0, -np.inf], dtype="float64")
     >>> pytensor.tensor.isclose(a, b).eval()
     array([ True, False])
-    >>> a = _asarray([1.0, np.inf], dtype="float64")
-    >>> b = _asarray([1.0, np.inf], dtype="float64")
+    >>> a = np.array([1.0, np.inf], dtype="float64")
+    >>> b = np.array([1.0, np.inf], dtype="float64")
     >>> pytensor.tensor.isclose(a, b).eval()
     array([ True,  True])
 
@@ -1430,18 +1428,12 @@ def mean(input, axis=None, dtype=None, op=False, keepdims=False, acc_dtype=None)
     else:
         shp = cast(shp, "float64")
 
-    if axis is None:
-        axis = list(range(input.ndim))
-    elif isinstance(axis, int | np.integer):
-        axis = [axis]
-    elif isinstance(axis, np.ndarray) and axis.ndim == 0:
-        axis = [int(axis)]
-    else:
-        axis = [int(a) for a in axis]
-
-    # This sequential division will possibly be optimized by PyTensor:
-    for i in axis:
-        s = true_div(s, shp[i])
+    reduced_dims = (
+        shp
+        if axis is None
+        else [shp[i] for i in normalize_axis_tuple(axis, input.type.ndim)]
+    )
+    s /= variadic_mul(*reduced_dims).astype(shp.dtype)
 
     # This can happen when axis is an empty list/tuple
     if s.dtype != shp.dtype and s.dtype in discrete_dtypes:
@@ -1574,6 +1566,48 @@ def std(input, axis=None, ddof=0, keepdims=False, corrected=False):
     return ret
 
 
+def median(x: TensorLike, axis=None) -> TensorVariable:
+    """
+    Computes the median along the given axis(es) of a tensor `input`.
+
+    Parameters
+    ----------
+    x: TensorVariable
+        The input tensor.
+    axis: None or int or (list of int) (see `Sum`)
+        Compute the median along this axis of the tensor.
+        None means all axes (like numpy).
+    """
+    from pytensor.ifelse import ifelse
+
+    x = as_tensor_variable(x)
+    x_ndim = x.type.ndim
+    if axis is None:
+        axis = list(range(x_ndim))
+    else:
+        axis = list(normalize_axis_tuple(axis, x_ndim))
+
+    non_axis = [i for i in range(x_ndim) if i not in axis]
+    non_axis_shape = [x.shape[i] for i in non_axis]
+
+    # Put axis at the end and unravel them
+    x_raveled = x.transpose(*non_axis, *axis)
+    if len(axis) > 1:
+        x_raveled = x_raveled.reshape((*non_axis_shape, -1))
+    raveled_size = x_raveled.shape[-1]
+    k = raveled_size // 2
+
+    # Sort the input tensor along the specified axis and pick median value
+    x_sorted = x_raveled.sort(axis=-1)
+    k_values = x_sorted[..., k]
+    km1_values = x_sorted[..., k - 1]
+
+    even_median = (k_values + km1_values) / 2.0
+    odd_median = k_values.astype(even_median.type.dtype)
+    even_k = eq(mod(raveled_size, 2), 0)
+    return ifelse(even_k, even_median, odd_median, name="median")
+
+
 @scalar_elemwise(symbolname="scalar_maximum")
 def maximum(x, y):
     """elemwise maximum. See max for the maximum in one tensor"""
@@ -1597,6 +1631,15 @@ def add(a, *other_terms):
     # see decorator for function body
 
 
+def variadic_add(*args):
+    """Add that accepts arbitrary number of inputs, including zero or one."""
+    if not args:
+        return constant(0)
+    if len(args) == 1:
+        return args[0]
+    return add(*args)
+
+
 @scalar_elemwise
 def sub(a, b):
     """elementwise subtraction"""
@@ -1607,6 +1650,15 @@ def sub(a, b):
 def mul(a, *other_terms):
     """elementwise multiplication"""
     # see decorator for function body
+
+
+def variadic_mul(*args):
+    """Mul that accepts arbitrary number of inputs, including zero or one."""
+    if not args:
+        return constant(1)
+    if len(args) == 1:
+        return args[0]
+    return mul(*args)
 
 
 @scalar_elemwise
@@ -2098,27 +2150,27 @@ def tensordot(
     are compatible. The resulting tensor will have shape (2, 5, 6) -- the
     dimensions that are not being summed:
 
-    >>> a = np.random.random((2,3,4))
-    >>> b = np.random.random((5,6,4,3))
+    >>> a = np.random.random((2, 3, 4))
+    >>> b = np.random.random((5, 6, 4, 3))
 
     #tensordot
-    >>> c = np.tensordot(a, b, [[1,2],[3,2]])
+    >>> c = np.tensordot(a, b, [[1, 2], [3, 2]])
 
     #loop replicating tensordot
     >>> a0, a1, a2 = a.shape
     >>> b0, b1, _, _ = b.shape
-    >>> cloop = np.zeros((a0,b0,b1))
+    >>> cloop = np.zeros((a0, b0, b1))
 
     #loop over non-summed indices -- these exist
     #in the tensor product.
     >>> for i in range(a0):
     ...     for j in range(b0):
     ...         for k in range(b1):
-    ...             #loop over summed indices -- these don't exist
-    ...             #in the tensor product.
+    ...             # loop over summed indices -- these don't exist
+    ...             # in the tensor product.
     ...             for l in range(a1):
     ...                 for m in range(a2):
-    ...                     cloop[i,j,k] += a[i,l,m] * b[j,k,m,l]
+    ...                     cloop[i, j, k] += a[i, l, m] * b[j, k, m, l]
 
     >>> np.allclose(c, cloop)
     True
@@ -2338,8 +2390,7 @@ class Sum(FixedOpCAReduce):
             else:
                 new_dims.append(i)
                 i += 1
-        ds_op = DimShuffle(gz.type.broadcastable, new_dims)
-        gx = Elemwise(ps.second)(x, ds_op(gz))
+        gx = Elemwise(ps.second)(x, gz.dimshuffle(new_dims))
         return [gx]
 
     def R_op(self, inputs, eval_points):
@@ -3006,6 +3057,7 @@ __all__ = [
     "sum",
     "prod",
     "mean",
+    "median",
     "var",
     "std",
     "std",
