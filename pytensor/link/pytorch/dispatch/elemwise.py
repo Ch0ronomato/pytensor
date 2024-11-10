@@ -13,7 +13,8 @@ def pytorch_funcify_Elemwise(op, node, **kwargs):
 
     def elemwise_fn(*inputs):
         Elemwise._check_runtime_broadcast(node, inputs)
-        return base_fn(*inputs)
+        res = base_fn(*inputs)
+        return res if torch.is_tensor(res) else torch.tensor(res)
 
     return elemwise_fn
 
