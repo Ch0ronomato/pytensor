@@ -125,7 +125,7 @@ def pytorch_funcify_Join(op, **kwargs):
     def join(axis, *tensors):
         # tensors could also be tuples, and in this case they don't have a ndim
         tensors = [
-            torch.tensor(tensor) if not torch.is_tensor(tensor) else tensor
+            torch.tensor(tensor, requires_grad=True) if not torch.is_tensor(tensor) else tensor
             for tensor in tensors
         ]
 
@@ -155,7 +155,7 @@ def pytorch_funcify_MakeVector(op, **kwargs):
     torch_dtype = getattr(torch, op.dtype)
 
     def makevector(*x):
-        return torch.tensor(x, dtype=torch_dtype)
+        return torch.tensor(x, dtype=torch_dtype, requires_grad=True)
 
     return makevector
 
@@ -186,7 +186,7 @@ def pytorch_funcify_OpFromGraph(op, node, **kwargs):
 @pytorch_funcify.register(TensorFromScalar)
 def pytorch_funcify_TensorFromScalar(op, **kwargs):
     def tensorfromscalar(x):
-        return torch.as_tensor(x)
+        return torch.as_tensor(x).requires_grad_(True)
 
     return tensorfromscalar
 
