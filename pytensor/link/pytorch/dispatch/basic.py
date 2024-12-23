@@ -125,7 +125,9 @@ def pytorch_funcify_Join(op, **kwargs):
     def join(axis, *tensors):
         # tensors could also be tuples, and in this case they don't have a ndim
         tensors = [
-            torch.tensor(tensor, requires_grad=True) if not torch.is_tensor(tensor) else tensor
+            torch.tensor(tensor, requires_grad=True)
+            if not torch.is_tensor(tensor)
+            else tensor
             for tensor in tensors
         ]
 
@@ -154,8 +156,12 @@ def pytorch_funcify_eye(op, **kwargs):
 def pytorch_funcify_MakeVector(op, **kwargs):
     torch_dtype = getattr(torch, op.dtype)
 
-    def makevector(*x):
-        return torch.tensor(x, dtype=torch_dtype, requires_grad=True)
+    def makevector(*xs):
+        return [
+            torch.tensor(x, dtype=torch_dtype, requires_grad=True)
+            for x in xs
+            if not torch.is_tensor(x)
+        ]
 
     return makevector
 
