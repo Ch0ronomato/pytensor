@@ -19,6 +19,7 @@ from pytensor.tensor.basic import (
     Eye,
     Join,
     MakeVector,
+    Split,
     TensorFromScalar,
 )
 
@@ -150,8 +151,12 @@ def pytorch_funcify_eye(op, **kwargs):
 def pytorch_funcify_MakeVector(op, **kwargs):
     torch_dtype = getattr(torch, op.dtype)
 
-    def makevector(*x):
-        return torch.tensor(x, dtype=torch_dtype)
+    def makevector(*xs):
+        res = [torch.tensor(x, dtype=torch_dtype) for x in xs]
+        if len(res) == 1:
+            return res[0]
+        else:
+            return res
 
     return makevector
 
@@ -185,3 +190,14 @@ def pytorch_funcify_TensorFromScalar(op, **kwargs):
         return torch.as_tensor(x)
 
     return tensorfromscalar
+
+
+@pytorch_funcify.register(Split)
+def pytorch_funcify_Split(op, node, **kwargs):
+    def inner_fn(x, dim, split_amounts):
+        return x.split(
+            split_amounts.tolist() if torch.is_tensor(split_amounts) else split_amounts,
+            dim=dim.item(),
+        )
+
+    return inner_fn

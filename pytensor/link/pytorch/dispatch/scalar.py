@@ -5,10 +5,16 @@ import torch
 from pytensor.link.pytorch.dispatch.basic import pytorch_funcify
 from pytensor.scalar.basic import (
     Cast,
+    Invert,
     ScalarOp,
 )
 from pytensor.scalar.loop import ScalarLoop
 from pytensor.scalar.math import Softplus
+
+
+@pytorch_funcify.register(Invert)
+def pytorch_funcify_invert(op, node, **kwargs):
+    return torch.bitwise_not
 
 
 @pytorch_funcify.register(ScalarOp)
@@ -42,10 +48,12 @@ def pytorch_funcify_ScalarOp(op, node, **kwargs):
                 f"Dispatch not implemented for Scalar Op {op} with {len(node.inputs)} inputs"
             )
 
-        def pytorch_func(*args):
+        def pytorch_func_variadic(*args):
             return pytorch_variadic_func(
                 torch.stack(torch.broadcast_tensors(*args), axis=0), axis=0
             )
+
+        return pytorch_func_variadic
 
     return pytorch_func
 

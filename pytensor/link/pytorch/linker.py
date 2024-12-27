@@ -51,6 +51,7 @@ class PytorchLinker(JITLinker):
             """
 
             def __init__(self, fn, gen_functors):
+                self._fn = fn
                 self.fn = torch.compile(fn)
                 self.gen_functors = gen_functors.copy()
 
@@ -62,6 +63,13 @@ class PytorchLinker(JITLinker):
                     setattr(pytensor.link.utils, n[1:], fn)
 
                 # Torch does not accept numpy inputs and may return GPU objects
+                # import torch._dynamo as dynamo
+
+                # res = dynamo.explain(self.fn)(
+                #     *(pytorch_typify(inp) for inp in inputs), **kwargs
+                # )
+                # with open("explaination.txt", "w") as f:
+                #     f.write(str(res))
                 outs = self.fn(*(pytorch_typify(inp) for inp in inputs), **kwargs)
 
                 # unset attrs

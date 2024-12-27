@@ -31,9 +31,7 @@ def pytorch_funcify_Elemwise(op, node, **kwargs):
     ):
         # torch can handle this scalar
         # broadcast, we'll let it.
-        def elemwise_fn(*inputs):
-            Elemwise._check_runtime_broadcast(node, inputs)
-            return base_fn(*inputs)
+        return base_fn
 
     elif isinstance(scalar_op, ScalarLoop):
         return elemwise_ravel_fn(base_fn, op, node, **kwargs)
@@ -48,7 +46,7 @@ def pytorch_funcify_Elemwise(op, node, **kwargs):
                 ufunc = torch.vmap(ufunc)
             return ufunc(*broadcast_inputs)
 
-    return elemwise_fn
+        return elemwise_fn
 
 
 @pytorch_funcify.register(DimShuffle)
@@ -192,7 +190,7 @@ def elemwise_ravel_fn(base_fn, op, node, **kwargs):
 
     n_outputs = len(node.outputs)
 
-    def elemwise_fn(*inputs):
+    def elemwise_raveled_fn(*inputs):
         bcasted_inputs = torch.broadcast_tensors(*inputs)
         raveled_inputs = [inp.ravel() for inp in bcasted_inputs]
 
@@ -214,4 +212,4 @@ def elemwise_ravel_fn(base_fn, op, node, **kwargs):
         else:
             return outputs
 
-    return elemwise_fn
+    return elemwise_raveled_fn

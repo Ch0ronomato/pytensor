@@ -23,6 +23,7 @@ __pycache__
 .noseids
 *.DS_Store
 *.bak
+*.ipynb
 *.egg-info/
 \#*\#
 build
@@ -38,6 +39,7 @@ pdf
 setuptools-*.egg
 pytensor/generated_version.py
 pytensor/generated_version.py.out
+profiling
 distribute-*.egg
 distribute-*.tar.gz
 PyTensor.suo
