@@ -10,6 +10,25 @@ from tests.link.pytorch.test_basic import pytorch_mode
 torch = pytest.importorskip("torch")
 
 
+def test_random_updates():
+    original = np.random.default_rng(seed=123)
+    rng = shared(original, name="rng", borrow=False)
+    rv = pt.random.bernoulli(0.5, name="y", rng=rng)
+    next_rng, x = rv.owner.outputs
+    x.dprint()
+    f = function([], [x], updates={rng: next_rng}, mode="PYTORCH")
+    assert any(f() for _ in range(5))
+
+    assert all(
+        a == b if not isinstance(a, np.ndarray) else np.array_equal(a, b)
+        for a, b in zip(
+            rng.get_value(),
+            original.bit_generator.state,
+            strict=True,
+        )
+    )
+
+
 @pytest.mark.parametrize(
     "size,p",
     [
